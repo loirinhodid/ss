@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Inscrição exclusiva para o programa Beta. Cadastre seus dados e veja estatísticas em tempo real no nosso painel de controle.">
+    <title>Beta Program|Sycorax</title>
+    <!-- Stylesheets -->
+    <link rel="stylesheet" href="styles.css">
+    <!-- Chart.js library via CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+     <link rel="icon" type="image/png" href="n.png">
+</head>
+<body>
+
+    <!-- Main Container -->
+    <main class="container">
+        
+        <!-- Header -->
+        <header>
+            <div class="logo" id="app-logo">
+                <span class="logo-icon">✦</span>
+                <span>Sycorax</span>
+            </div>
+            <nav class="tabs-nav" aria-label="Navegação Principal">
+                <button class="tab-btn active" id="nav-signup" aria-selected="true" role="tab">
+                    <span style="font-size: 1.1rem;">✎</span> Inscrição
+                </button>
+                <button class="tab-btn locked-tab" id="nav-dashboard" aria-selected="false" role="tab">
+                    Dashboard
+                </button>
+            </nav>
+        </header>
+
+        <!-- View 1: Sign-Up Tab -->
+        <section id="signup-view" class="tab-content active" role="tabpanel" aria-labelledby="nav-signup">
+            <div class="glass-card">
+                <div class="form-header">
+                    <h2>Programa de Testes Beta</h2>
+                    <p>Candidate-se a uma vaga no desenvolvimento de nossa próxima geração de produtos inovadores.</p>
+                </div>
+                
+                <form id="beta-form" novalidate>
+                    <!-- Name Input -->
+                    <div class="form-group">
+                        <label for="user-name">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                            Nome Completo
+                        </label>
+                        <div class="input-wrapper">
+                            <span class="input-icon">👤</span>
+                            <input type="text" id="user-name" class="form-input" placeholder="Digite seu nome completo" required autocomplete="name">
+                        </div>
+                    </div>
+
+                    <!-- Email Input -->
+                    <div class="form-group">
+                        <label for="user-email">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+                            Endereço de E-mail
+                        </label>
+                        <div class="input-wrapper">
+                            <span class="input-icon">✉</span>
+                            <input type="email" id="user-email" class="form-input" placeholder="exemplo@email.com" required autocomplete="email">
+                        </div>
+                    </div>
+
+                    <!-- The Very Specific Checkbox/Option box -->
+                    <div class="beta-option-container">
+                        <div class="beta-option-title">Opção de Participação</div>
+                        <div class="beta-option-desc">Você concorda e deseja participar ativamente do Programa de Testes Beta fornecendo feedbacks regulares?</div>
+                        
+                        <div class="beta-choices">
+                            <!-- Yes card option -->
+                            <div class="choice-card yes-choice selected" id="choice-card-yes">
+                                <input type="radio" id="choice-yes" name="beta-choice" value="yes" checked>
+                                <span class="choice-icon">🚀</span>
+                                <span class="choice-label">Sim, quero participar</span>
+                            </div>
+                            
+                            <!-- No card option -->
+                            <div class="choice-card no-choice" id="choice-card-no">
+                                <input type="radio" id="choice-no" name="beta-choice" value="no">
+                                <span class="choice-icon">✕</span>
+                                <span class="choice-label">Não quero participar</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Submit Button -->
+                    <button type="submit" class="btn-submit" id="btn-submit-signup">
+                        <span>Enviar Inscrição</span>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12,5 19,12 12,19"></polyline></svg>
+                    </button>
+                </form>
+            </div>
+        </section>
+
+        <!-- View 2: Dashboard Tab -->
+        <section id="dashboard-view" class="tab-content" role="tabpanel" aria-labelledby="nav-dashboard">
+            
+            <!-- Dashboard Password Screen (Shown when Locked) -->
+            <div id="lock-screen" class="glass-card lock-wrapper">
+                <div class="lock-shield">🔒</div>
+                <h2 class="lock-title">Painel Restrito</h2>
+                <p class="lock-desc">Esta seção contém dados confidenciais do programa de inscritos. Digite a credencial administrativa para desbloquear.</p>
+                
+                <form id="lock-form" class="lock-form" novalidate>
+                    <div class="form-group" style="text-align: left;">
+                        <label for="dashboard-username">Usuário</label>
+                        <div class="input-wrapper">
+                            <span class="input-icon">👤</span>
+                            <input type="text" id="dashboard-username" class="form-input" placeholder="Digite seu usuário" required autocomplete="username">
+                        </div>
+                    </div>
+
+                    <div class="form-group" style="text-align: left;">
+                        <label for="dashboard-password" id="password-label">Senha</label>
+                        <div class="input-wrapper">
+                            <span class="input-icon">🔑</span>
+                            <input type="password" id="dashboard-password" class="form-input" placeholder="Digite sua senha" required autocomplete="current-password">
+                        </div>
+                    </div>
+
+                    <div id="login-help" class="login-help">Usuário atual: admin. Se for um usuário novo ou não-admin, a senha poderá ser criada na própria tela.</div>
+                    <span id="lock-error-msg" class="lock-error-message">Senha inválida. Tente novamente!</span>
+                    <button type="submit" class="btn-submit btn-unlock" id="btn-submit-lock">Entrar</button>
+                </form>
+            </div>
+
+            <!-- Dashboard Content Screen (Shown when Unlocked) -->
+            <div id="dashboard-content" style="display: none;">
+                <!-- KPI Statistics -->
+                <div class="dashboard-grid">
+                    <!-- Total Submissions Card -->
+                    <div class="stat-card total-users" id="card-stat-total">
+                        <div class="stat-icon">👥</div>
+                        <div class="stat-info">
+                            <span class="stat-label">Total Inscritos</span>
+                            <span class="stat-value" id="stat-total">0</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Yes Submissions Card -->
+                    <div class="stat-card yes-users" id="card-stat-yes">
+                        <div class="stat-icon">🚀</div>
+                        <div class="stat-info">
+                            <span class="stat-label">Querem Participar</span>
+                            <span class="stat-value" id="stat-yes">0</span>
+                        </div>
+                    </div>
+                    
+                    <!-- No Submissions Card -->
+                    <div class="stat-card no-users" id="card-stat-no">
+                        <div class="stat-icon">✕</div>
+                        <div class="stat-info">
+                            <span class="stat-label">Não Querem</span>
+                            <span class="stat-value" id="stat-no">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Visuals & Details Area -->
+                <div class="visuals-grid">
+                    <!-- Chart widget -->
+                    <div class="glass-card chart-wrapper">
+                        <div class="chart-title">Distribuição de Respostas</div>
+                        <div class="chart-container">
+                            <canvas id="statsChart"></canvas>
+                            <div id="chart-placeholder" style="display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--text-secondary); height: 100%;">
+                                <div style="font-size: 2.8rem; margin-bottom: 0.8rem; filter: opacity(0.35);">📊</div>
+                                <div style="font-weight: 700; font-size: 0.95rem; color: var(--text-primary); margin-bottom: 0.3rem;">Painel Estatístico Vazio</div>
+                                <div style="font-size: 0.8rem; max-width: 220px; line-height: 1.4; color: var(--text-muted);">As métricas e proporções serão geradas automaticamente assim que novas inscrições reais forem recebidas.</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Submissions list table widget -->
+                    <div class="glass-card table-wrapper">
+                        <div class="table-header-row">
+                            <div class="table-title">Registros Capturados</div>
+                        </div>
+                        <div class="table-container">
+                            <table id="submissions-table">
+                                <thead>
+                                    <tr>
+                                        <th scope="col">Nome</th>
+                                        <th scope="col">E-mail</th>
+                                        <th scope="col">Opção</th>
+                                        <th scope="col">Data/Hora</th>
+                                        <th scope="col">Ações</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="data-table-body">
+                                    <!-- Rendered dynamically in JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dashboard Footer Actions -->
+                <div id="admin-audit-panel" class="glass-card admin-users-card" style="display: none;">
+                    <div class="table-header-row">
+                        <div class="table-title">Controle Administrativo</div>
+                    </div>
+
+                    <div class="admin-section">
+                        <div class="admin-section-title">Pré-cadastro de usuários</div>
+                        <form id="admin-user-form" class="user-form" novalidate>
+                            <div class="form-group">
+                                <label for="admin-username">Nome de usuário para liberar acesso</label>
+                                <div class="input-wrapper">
+                                    <span class="input-icon">👤</span>
+                                    <input type="text" id="admin-username" class="form-input" placeholder="Digite o nome de usuário" required autocomplete="username">
+                                </div>
+                            </div>
+                            <button type="submit" class="btn-submit" id="btn-create-user-slot">
+                                <span>Pré-cadastrar usuário</span>
+                            </button>
+                        </form>
+                    </div>
+
+                    <div class="admin-section">
+                        <div class="admin-section-title">Usuários cadastrados</div>
+                        <div class="table-container audit-table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Usuário</th>
+                                        <th>Perfil</th>
+                                        <th>Último login</th>
+                                        <th>Status</th>
+                                        <th>Ações</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="admin-users-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="admin-section">
+                        <div class="admin-section-title-row">
+                            <div class="admin-section-title">Log de atividades</div>
+                            <button type="button" id="btn-clear-audit-log" class="btn-secondary btn-danger btn-small">
+                                Limpar log
+                            </button>
+                        </div>
+                        <div class="table-container audit-table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Usuário</th>
+                                        <th>Ação</th>
+                                        <th>Detalhes</th>
+                                        <th>Data</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="admin-log-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard-actions">
+                    <button id="btn-clear-all" class="btn-secondary btn-danger" type="button">
+                        <span>Limpar Tudo</span> 🧹
+                    </button>
+                    <button id="btn-lock-db" class="btn-secondary" type="button">
+                        <span>Bloquear Painel</span> 🔒
+                    </button>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Global Toast notification container -->
+    <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+    <!-- Footer -->
+    <footer>
+        <p>&copy; 2026 Sycorax Network. Criptografia SHA-256 ativa.</p>
+    </footer>
+
+    <!-- Logic Script -->
+    <script src="app.js"></script>
+</body>
+</html>

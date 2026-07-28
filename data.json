@@ -1,0 +1,11 @@
+{
+  "registrations": [],
+  "users": [
+    {
+      "username": "admin",
+      "role": "admin",
+      "createdAt": "2026-07-27T00:00:00.000Z",
+      "password": "c8bf231d991a832c793f8b518ae7a49d4e807ac1ab183c2a01bc659c01d0b774"
+    }
+  ]
+}
