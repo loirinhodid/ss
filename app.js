@@ -21,8 +21,14 @@ class UserAccount {
     }
 }
 
-function hashPassword(password) {
-    return password;
+async function hashPassword(password) {
+    if (!password) return '';
+    try {
+        return await computeSHA256(password);
+    } catch (err) {
+        console.error('Erro ao gerar hash da senha:', err);
+        return '';
+    }
 }
 
 // SHA-256 Cryptographic function using Web Crypto API
@@ -403,9 +409,10 @@ async function handleUnlockAttempt(e) {
         const existingUser = users.find(user => user.username.toLowerCase() === username.toLowerCase());
         const isAdmin = username.toLowerCase() === DEFAULT_ADMIN_USERNAME;
 
-        if (isAdmin) {
+            if (isAdmin) {
             const adminUser = existingUser || users.find(user => user.username.toLowerCase() === DEFAULT_ADMIN_USERNAME);
-            if (adminUser && adminUser.password === hashPassword(password)) {
+            const hashedAttempt = await hashPassword(password);
+            if (adminUser && adminUser.password === hashedAttempt) {
                 adminUser.lastLogin = new Date().toISOString();
                 setCurrentUserName(adminUser.username);
                 addAuditLog('admin', 'Login', 'Admin acessou o painel');
@@ -434,7 +441,7 @@ async function handleUnlockAttempt(e) {
         }
 
         if (!existingUser.password) {
-            existingUser.password = hashPassword(password);
+            existingUser.password = await hashPassword(password);
             existingUser.lastLogin = new Date().toISOString();
             setCurrentUserName(existingUser.username);
             addAuditLog(existingUser.username, 'Senha criada', 'Usuário criou a própria senha');
@@ -448,7 +455,8 @@ async function handleUnlockAttempt(e) {
             return;
         }
 
-        if (existingUser.password === hashPassword(password)) {
+        const hashedAttemptUser = await hashPassword(password);
+        if (existingUser.password === hashedAttemptUser) {
             existingUser.lastLogin = new Date().toISOString();
             setCurrentUserName(existingUser.username);
             addAuditLog(existingUser.username, 'Login', 'Usuário acessou o painel');
