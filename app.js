@@ -2,6 +2,7 @@
 const STORAGE_KEY = 'beta_portal_real_registrations';
 const SESSION_UNLOCK_KEY = 'dashboard_unlocked';
 const CURRENT_USER_KEY = 'dashboard_current_user';
+const PARTICIPATION_CHOICE_KEY = 'beta_portal_last_choice';
 const API_ENDPOINT = '/api/registrations';
 const CORRECT_HASH = 'c8bf231d991a832c793f8b518ae7a49d4e807ac1ab183c2a01bc659c01d0b774'; // SHA-256 of "aniimo"
 const DEFAULT_ADMIN_USERNAME = 'admin';
@@ -10,6 +11,12 @@ const DEFAULT_ADMIN_PASSWORD = 'aniimo';
 let registrations = [];
 let users = [];
 let auditLog = [];
+let sessionState = {
+    dashboardUnlocked: false,
+    currentUser: '',
+    lastParticipationChoice: 'yes',
+    lastUpdated: new Date().toISOString()
+};
 let chartInstance = null;
 
 class UserAccount {
@@ -46,6 +53,14 @@ async function initApp() {
 
     setupEventListeners();
     checkLockedState();
+
+    window.addEventListener('focus', () => syncSharedStateFromBackend());
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            syncSharedStateFromBackend();
+        }
+    });
+    window.setInterval(() => syncSharedStateFromBackend(), 5000);
     
     // Default tab check
     showTab('signup-tab');
@@ -60,10 +75,18 @@ async function loadRegistrations() {
                 registrations = Array.isArray(data.registrations) ? data.registrations : [];
                 users = Array.isArray(data.users) ? data.users : [];
                 auditLog = Array.isArray(data.auditLog) ? data.auditLog : [];
+                sessionState = {
+                    dashboardUnlocked: Boolean(data.sessionState?.dashboardUnlocked),
+                    currentUser: typeof data.sessionState?.currentUser === 'string' ? data.sessionState.currentUser : '',
+                    lastParticipationChoice: data.sessionState?.lastParticipationChoice === 'no' ? 'no' : 'yes',
+                    lastUpdated: typeof data.sessionState?.lastUpdated === 'string' ? data.sessionState.lastUpdated : new Date().toISOString()
+                };
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(registrations));
                 localStorage.setItem('beta_portal_users', JSON.stringify(users));
                 localStorage.setItem('beta_portal_audit_log', JSON.stringify(auditLog));
+                localStorage.setItem('beta_portal_session_state', JSON.stringify(sessionState));
                 ensureDefaultAdminUser();
+                applySessionStateToUi();
                 return;
             }
 
@@ -71,10 +94,18 @@ async function loadRegistrations() {
                 registrations = data;
                 users = [];
                 auditLog = [];
+                sessionState = {
+                    dashboardUnlocked: false,
+                    currentUser: '',
+                    lastParticipationChoice: 'yes',
+                    lastUpdated: new Date().toISOString()
+                };
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(registrations));
                 localStorage.setItem('beta_portal_users', JSON.stringify(users));
                 localStorage.setItem('beta_portal_audit_log', JSON.stringify(auditLog));
+                localStorage.setItem('beta_portal_session_state', JSON.stringify(sessionState));
                 ensureDefaultAdminUser();
+                applySessionStateToUi();
                 return;
             }
         }
@@ -119,7 +150,28 @@ async function loadRegistrations() {
         localStorage.setItem('beta_portal_audit_log', JSON.stringify(auditLog));
     }
 
+    const storedSessionState = localStorage.getItem('beta_portal_session_state');
+    if (storedSessionState) {
+        try {
+            const parsedSessionState = JSON.parse(storedSessionState);
+            sessionState = {
+                dashboardUnlocked: Boolean(parsedSessionState.dashboardUnlocked),
+                currentUser: typeof parsedSessionState.currentUser === 'string' ? parsedSessionState.currentUser : '',
+                lastParticipationChoice: parsedSessionState.lastParticipationChoice === 'no' ? 'no' : 'yes',
+                lastUpdated: typeof parsedSessionState.lastUpdated === 'string' ? parsedSessionState.lastUpdated : new Date().toISOString()
+            };
+        } catch (error) {
+            sessionState = {
+                dashboardUnlocked: false,
+                currentUser: '',
+                lastParticipationChoice: 'yes',
+                lastUpdated: new Date().toISOString()
+            };
+        }
+    }
+
     ensureDefaultAdminUser();
+    applySessionStateToUi();
 }
 
 function ensureDefaultAdminUser() {
@@ -137,15 +189,17 @@ function ensureDefaultAdminUser() {
 }
 
 async function persistRegistrations() {
+    sessionState.lastUpdated = new Date().toISOString();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(registrations));
     localStorage.setItem('beta_portal_users', JSON.stringify(users));
     localStorage.setItem('beta_portal_audit_log', JSON.stringify(auditLog));
+    localStorage.setItem('beta_portal_session_state', JSON.stringify(sessionState));
 
     try {
         await fetch(API_ENDPOINT, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ registrations, users, auditLog })
+            body: JSON.stringify({ registrations, users, auditLog, sessionState })
         });
     } catch (error) {
         console.warn('Não foi possível sincronizar os registros com o arquivo JSON.', error);
@@ -165,7 +219,10 @@ function setupEventListeners() {
             choiceCards.forEach(c => c.classList.remove('selected'));
             card.classList.add('selected');
             const radio = card.querySelector('input[type="radio"]');
-            if (radio) radio.checked = true;
+            if (radio) {
+                radio.checked = true;
+                updateParticipationPreference(radio.value);
+            }
         });
     });
 
@@ -206,13 +263,12 @@ function showTab(tabId) {
 }
 
 // Check locked state and show appropriate UI in Dashboard view
-function checkLockedState() {
-    const isUnlocked = sessionStorage.getItem(SESSION_UNLOCK_KEY) === 'true';
+function applySessionStateToUi() {
     const lockScreen = document.getElementById('lock-screen');
     const dashboardContent = document.getElementById('dashboard-content');
     const navDashboardBtn = document.getElementById('nav-dashboard');
 
-    if (isUnlocked) {
+    if (sessionState.dashboardUnlocked) {
         lockScreen.style.display = 'none';
         dashboardContent.style.display = 'block';
         navDashboardBtn.classList.remove('locked-tab');
@@ -223,25 +279,38 @@ function checkLockedState() {
         navDashboardBtn.classList.remove('unlocked-tab');
         navDashboardBtn.classList.add('locked-tab');
     }
+
+    const selectedChoice = sessionState.lastParticipationChoice === 'no' ? 'no' : 'yes';
+    const choiceYes = document.getElementById('choice-yes');
+    const choiceNo = document.getElementById('choice-no');
+    if (choiceYes && choiceNo) {
+        choiceYes.checked = selectedChoice === 'yes';
+        choiceNo.checked = selectedChoice === 'no';
+        document.querySelectorAll('.choice-card').forEach(card => card.classList.remove('selected'));
+        document.querySelector(`#choice-card-${selectedChoice}`)?.classList.add('selected');
+    }
+}
+
+function checkLockedState() {
+    applySessionStateToUi();
 }
 
 function unlockDashboard(message) {
-    sessionStorage.setItem(SESSION_UNLOCK_KEY, 'true');
+    sessionState.dashboardUnlocked = true;
+    sessionState.lastUpdated = new Date().toISOString();
+    persistRegistrations();
     checkLockedState();
     renderDashboard();
     showToast(message, 'success');
 }
 
 function getCurrentUserName() {
-    return sessionStorage.getItem(CURRENT_USER_KEY) || '';
+    return sessionState.currentUser || '';
 }
 
 function setCurrentUserName(username) {
-    if (username) {
-        sessionStorage.setItem(CURRENT_USER_KEY, username);
-    } else {
-        sessionStorage.removeItem(CURRENT_USER_KEY);
-    }
+    sessionState.currentUser = username || '';
+    sessionState.lastUpdated = new Date().toISOString();
 }
 
 function addAuditLog(user, action, details) {
@@ -251,6 +320,45 @@ function addAuditLog(user, action, details) {
         details,
         date: new Date().toISOString()
     });
+}
+
+async function syncSharedStateFromBackend() {
+    try {
+        const response = await fetch(API_ENDPOINT);
+        if (!response.ok) return;
+
+        const data = await response.json();
+        if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+
+        const remoteSessionState = data.sessionState;
+        if (!remoteSessionState || typeof remoteSessionState !== 'object') return;
+
+        const remoteUpdatedAt = remoteSessionState.lastUpdated ? Date.parse(remoteSessionState.lastUpdated) : 0;
+        const localUpdatedAt = sessionState.lastUpdated ? Date.parse(sessionState.lastUpdated) : 0;
+
+        if (Number.isNaN(remoteUpdatedAt) || remoteUpdatedAt <= localUpdatedAt) return;
+
+        sessionState = {
+            dashboardUnlocked: Boolean(remoteSessionState.dashboardUnlocked),
+            currentUser: typeof remoteSessionState.currentUser === 'string' ? remoteSessionState.currentUser : '',
+            lastParticipationChoice: remoteSessionState.lastParticipationChoice === 'no' ? 'no' : 'yes',
+            lastUpdated: typeof remoteSessionState.lastUpdated === 'string' ? remoteSessionState.lastUpdated : new Date().toISOString()
+        };
+
+        localStorage.setItem('beta_portal_session_state', JSON.stringify(sessionState));
+        applySessionStateToUi();
+        if (document.getElementById('dashboard-content').style.display === 'block') {
+            renderDashboard();
+        }
+    } catch (error) {
+        console.warn('Não foi possível sincronizar o estado compartilhado com o backend.', error);
+    }
+}
+
+function updateParticipationPreference(choice) {
+    sessionState.lastParticipationChoice = choice === 'no' ? 'no' : 'yes';
+    sessionState.lastUpdated = new Date().toISOString();
+    localStorage.setItem('beta_portal_session_state', JSON.stringify(sessionState));
 }
 
 function renderAdminAuditPanel(currentUser) {
@@ -482,8 +590,9 @@ async function handleUnlockAttempt(e) {
 
 // Lock dashboard manually
 function lockDashboard() {
-    sessionStorage.removeItem(SESSION_UNLOCK_KEY);
+    sessionState.dashboardUnlocked = false;
     setCurrentUserName('');
+    localStorage.setItem('beta_portal_session_state', JSON.stringify(sessionState));
     checkLockedState();
     showToast('Painel bloqueado com segurança.', 'success');
 }
@@ -510,6 +619,7 @@ async function handleFormSubmit(e) {
     }
     
     const choice = choiceRadio.value;
+    updateParticipationPreference(choice);
     
     // Create registration record
     const newRecord = {

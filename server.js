@@ -5,7 +5,7 @@ const path = require('path');
 
 const PORT = process.env.PORT || 8000;
 const PUBLIC_DIR = path.resolve(__dirname);
-const DATA_FILE = path.join(PUBLIC_DIR, 'data.json');
+const DATA_FILE = process.env.DATA_FILE || path.join(PUBLIC_DIR, 'data.json');
 
 const MIME_TYPES = {
     '.html': 'text/html',
@@ -18,6 +18,28 @@ const MIME_TYPES = {
     '.svg': 'image/svg+xml'
 };
 
+function createDefaultSessionState() {
+    return {
+        dashboardUnlocked: false,
+        currentUser: '',
+        lastParticipationChoice: 'yes',
+        lastUpdated: new Date().toISOString()
+    };
+}
+
+function normalizeSessionState(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return createDefaultSessionState();
+    }
+
+    return {
+        dashboardUnlocked: Boolean(value.dashboardUnlocked),
+        currentUser: typeof value.currentUser === 'string' ? value.currentUser : '',
+        lastParticipationChoice: value.lastParticipationChoice === 'no' ? 'no' : 'yes',
+        lastUpdated: typeof value.lastUpdated === 'string' ? value.lastUpdated : new Date().toISOString()
+    };
+}
+
 function readRegistrationsFile() {
     try {
         const content = fs.readFileSync(DATA_FILE, 'utf8');
@@ -27,21 +49,23 @@ function readRegistrationsFile() {
             return {
                 registrations: Array.isArray(parsed.registrations) ? parsed.registrations : [],
                 users: Array.isArray(parsed.users) ? parsed.users : [],
-                auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : []
+                auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
+                sessionState: normalizeSessionState(parsed.sessionState)
             };
         }
 
         return {
             registrations: Array.isArray(parsed) ? parsed : [],
             users: [],
-            auditLog: []
+            auditLog: [],
+            sessionState: createDefaultSessionState()
         };
     } catch (error) {
         if (error.code !== 'ENOENT') {
             console.warn('Não foi possível ler data.json:', error);
         }
-        fs.writeFileSync(DATA_FILE, JSON.stringify({ registrations: [], users: [] }, null, 2), 'utf8');
-        return { registrations: [], users: [] };
+        fs.writeFileSync(DATA_FILE, JSON.stringify({ registrations: [], users: [], auditLog: [], sessionState: createDefaultSessionState() }, null, 2), 'utf8');
+        return { registrations: [], users: [], auditLog: [], sessionState: createDefaultSessionState() };
     }
 }
 
@@ -50,9 +74,10 @@ function writeRegistrationsFile(data) {
         ? {
             registrations: Array.isArray(data.registrations) ? data.registrations : [],
             users: Array.isArray(data.users) ? data.users : [],
-            auditLog: Array.isArray(data.auditLog) ? data.auditLog : []
+            auditLog: Array.isArray(data.auditLog) ? data.auditLog : [],
+            sessionState: normalizeSessionState(data.sessionState)
           }
-        : { registrations: Array.isArray(data) ? data : [], users: [], auditLog: [] };
+        : { registrations: Array.isArray(data) ? data : [], users: [], auditLog: [], sessionState: createDefaultSessionState() };
 
     fs.writeFileSync(DATA_FILE, JSON.stringify(payload, null, 2), 'utf8');
 }
@@ -137,3 +162,10 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}/`);
 });
+
+module.exports = {
+    createDefaultSessionState,
+    normalizeSessionState,
+    readRegistrationsFile,
+    writeRegistrationsFile
+};
