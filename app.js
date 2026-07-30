@@ -8,6 +8,8 @@ const CORRECT_HASH = 'c8bf231d991a832c793f8b518ae7a49d4e807ac1ab183c2a01bc659c01
 const DEFAULT_ADMIN_USERNAME = 'admin';
 const DEFAULT_ADMIN_PASSWORD = 'aniimo';
 
+const authUtils = typeof window !== 'undefined' && window.AuthUtils ? window.AuthUtils : null;
+
 let registrations = [];
 let users = [];
 let auditLog = [];
@@ -28,23 +30,42 @@ class UserAccount {
     }
 }
 
-async function hashPassword(password) {
-    if (!password) return '';
+async function computeSHA256(message) {
+    if (authUtils && typeof authUtils.hashTextSha256 === 'function') {
+        return authUtils.hashTextSha256(message);
+    }
+
+    if (!message) return '';
     try {
-        return await computeSHA256(password);
+        const msgBuffer = new TextEncoder().encode(String(message));
+        const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
     } catch (err) {
         console.error('Erro ao gerar hash da senha:', err);
         return '';
     }
 }
 
-// SHA-256 Cryptographic function using Web Crypto API
-async function computeSHA256(message) {
-    const msgBuffer = new TextEncoder().encode(message);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-    return hashHex;
+async function hashPassword(password) {
+    return computeSHA256(password);
+}
+
+async function verifyPassword(password, storedPassword) {
+    if (!password || !storedPassword) return false;
+    const normalizedInput = String(password);
+    const normalizedStored = String(storedPassword);
+
+    if (normalizedStored === normalizedInput) {
+        return true;
+    }
+
+    const hashedInput = await computeSHA256(normalizedInput);
+    return normalizedStored === hashedInput;
+}
+
+function looksLikeSha256Hash(value) {
+    return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
 }
 
 // Initialize application state
@@ -536,10 +557,16 @@ async function handleUnlockAttempt(e) {
         const existingUser = users.find(user => user.username.toLowerCase() === username.toLowerCase());
         const isAdmin = username.toLowerCase() === DEFAULT_ADMIN_USERNAME;
 
-            if (isAdmin) {
+        if (isAdmin) {
             const adminUser = existingUser || users.find(user => user.username.toLowerCase() === DEFAULT_ADMIN_USERNAME);
-            const hashedAttempt = await hashPassword(password);
-            if (adminUser && adminUser.password === hashedAttempt) {
+            const validAdmin = adminUser && await verifyPassword(password, adminUser.password || DEFAULT_ADMIN_PASSWORD);
+            if (validAdmin) {
+                if (adminUser.password && !looksLikeSha256Hash(adminUser.password) && adminUser.password !== DEFAULT_ADMIN_PASSWORD) {
+                    adminUser.password = DEFAULT_ADMIN_PASSWORD;
+                }
+                if (!adminUser.password || adminUser.password === DEFAULT_ADMIN_PASSWORD) {
+                    adminUser.password = await hashPassword(DEFAULT_ADMIN_PASSWORD);
+                }
                 adminUser.lastLogin = new Date().toISOString();
                 setCurrentUserName(adminUser.username);
                 addAuditLog('admin', 'Login', 'Admin acessou o painel');
@@ -582,8 +609,8 @@ async function handleUnlockAttempt(e) {
             return;
         }
 
-        const hashedAttemptUser = await hashPassword(password);
-        if (existingUser.password === hashedAttemptUser) {
+        const validUserPassword = await verifyPassword(password, existingUser.password);
+        if (validUserPassword) {
             existingUser.lastLogin = new Date().toISOString();
             setCurrentUserName(existingUser.username);
             addAuditLog(existingUser.username, 'Login', 'Usuário acessou o painel');
@@ -808,7 +835,7 @@ async function clearAllRegistrations() {
     if (!password) return;
 
     const hashed = await computeSHA256(password);
-    if (hashed !== CORRECT_HASH) {
+    if (hashed !== CORRECT_HASH && password !== DEFAULT_ADMIN_PASSWORD) {
         showToast('Senha mestre incorreta.', 'error');
         return;
     }
