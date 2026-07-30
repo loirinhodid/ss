@@ -33,15 +33,24 @@ function normalizeSessionState() {
 
 function buildPersistedPayload(data) {
     const safeSessionState = normalizeSessionState();
-    const registrations = data && typeof data === 'object' && !Array.isArray(data) && Array.isArray(data.registrations)
-        ? data.registrations
+    const source = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+    const registrations = Array.isArray(source.registrations)
+        ? source.registrations
         : Array.isArray(data) ? data : [];
+    const users = Array.isArray(source.users) ? source.users : [];
+    const auditLog = Array.isArray(source.auditLog) ? source.auditLog : [];
+    const sessionState = {
+        dashboardUnlocked: false,
+        currentUser: '',
+        lastParticipationChoice: 'yes',
+        lastUpdated: typeof source.sessionState?.lastUpdated === 'string' ? source.sessionState.lastUpdated : new Date().toISOString()
+    };
 
     const payload = {
         registrations,
-        users: [],
-        auditLog: [],
-        sessionState: safeSessionState
+        users,
+        auditLog,
+        sessionState
     };
 
     payload.sessionState.lastUpdated = new Date().toISOString();

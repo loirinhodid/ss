@@ -25,6 +25,8 @@ test('persists shared registration data while sanitizing sensitive session state
   const result = readRegistrationsFile();
 
   assert.deepEqual(result.registrations, payload.registrations);
+  assert.deepEqual(result.users, payload.users);
+  assert.deepEqual(result.auditLog, payload.auditLog);
   assert.equal(result.sessionState.dashboardUnlocked, false);
   assert.equal(result.sessionState.currentUser, '');
   assert.equal(result.sessionState.lastParticipationChoice, 'yes');
