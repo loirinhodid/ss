@@ -110,6 +110,12 @@ function applySharedDataFromBackend(data, { preserveLocalSession = true } = {}) 
     }
 
     registrations = Array.isArray(data.registrations) ? data.registrations : [];
+    if (Array.isArray(data.users)) {
+        users = data.users;
+    }
+    if (Array.isArray(data.auditLog)) {
+        auditLog = data.auditLog;
+    }
 
     const savedSessionState = preserveLocalSession ? getStoredSessionState() : null;
     sessionState = savedSessionState ? {
@@ -125,6 +131,8 @@ function applySharedDataFromBackend(data, { preserveLocalSession = true } = {}) 
     };
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(registrations));
+    localStorage.setItem('beta_portal_users', JSON.stringify(users));
+    localStorage.setItem('beta_portal_audit_log', JSON.stringify(auditLog));
     localStorage.setItem('beta_portal_session_state', JSON.stringify(sessionState));
     ensureDefaultAdminUser();
     applySessionStateToUi();
@@ -249,7 +257,7 @@ async function persistRegistrations() {
         await fetch(API_ENDPOINT, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ registrations })
+            body: JSON.stringify({ registrations, users, auditLog, sessionState })
         });
     } catch (error) {
         console.warn('Não foi possível sincronizar os registros com o arquivo JSON.', error);
@@ -286,6 +294,7 @@ function setupEventListeners() {
     document.getElementById('btn-lock-db').addEventListener('click', lockDashboard);
     document.getElementById('btn-clear-all').addEventListener('click', clearAllRegistrations);
     document.getElementById('admin-user-form').addEventListener('submit', handleAdminCreateUser);
+    document.getElementById('password-change-form').addEventListener('submit', handlePasswordChange);
     document.getElementById('btn-clear-audit-log').addEventListener('click', clearAuditLog);
 
 }
@@ -401,6 +410,48 @@ function updateParticipationPreference(choice) {
     localStorage.setItem('beta_portal_session_state', JSON.stringify(sessionState));
 }
 
+function renderPasswordManagementPanel(currentUser) {
+    const panel = document.getElementById('password-management-panel');
+    if (!panel) return;
+
+    if (!currentUser) {
+        panel.style.display = 'none';
+        return;
+    }
+
+    panel.style.display = 'block';
+
+    const select = document.getElementById('password-user-select');
+    const currentPasswordInput = document.getElementById('current-password');
+    const newPasswordInput = document.getElementById('new-password');
+    const confirmPasswordInput = document.getElementById('confirm-password');
+
+    if (!select || !currentPasswordInput || !newPasswordInput || !confirmPasswordInput) return;
+
+    select.innerHTML = '';
+    const eligibleUsers = currentUser.role === 'admin'
+        ? users
+        : users.filter(user => user.username.toLowerCase() === currentUser.username.toLowerCase());
+
+    eligibleUsers.forEach(user => {
+        const option = document.createElement('option');
+        option.value = user.username;
+        option.textContent = user.username + (user.role === 'admin' ? ' (Admin)' : '');
+        if (user.username.toLowerCase() === currentUser.username.toLowerCase()) {
+            option.selected = true;
+        }
+        select.appendChild(option);
+    });
+
+    const isAdmin = currentUser.role === 'admin';
+    select.disabled = !isAdmin;
+    currentPasswordInput.disabled = isAdmin;
+    currentPasswordInput.required = !isAdmin;
+    currentPasswordInput.value = '';
+    newPasswordInput.value = '';
+    confirmPasswordInput.value = '';
+}
+
 function renderAdminAuditPanel(currentUser) {
     const panel = document.getElementById('admin-audit-panel');
     if (!currentUser || currentUser.role !== 'admin') {
@@ -482,8 +533,71 @@ async function handleAdminCreateUser(e) {
     users.push(adminUser);
     addAuditLog('admin', 'Pré-cadastro', `Usuário ${username} preparado para acesso`);
     await persistRegistrations();
+    renderDashboard();
     usernameInput.value = '';
     showToast('Usuário pré-cadastrado. Ele poderá criar sua senha na próxima tentativa de login.', 'success');
+}
+
+async function handlePasswordChange(e) {
+    e.preventDefault();
+
+    const currentUserName = getCurrentUserName();
+    const currentUser = users.find(user => user.username.toLowerCase() === currentUserName.toLowerCase());
+    if (!currentUser) {
+        showToast('Faça login para alterar a senha.', 'error');
+        return;
+    }
+
+    const targetUserSelect = document.getElementById('password-user-select');
+    const targetUsername = targetUserSelect ? targetUserSelect.value : currentUser.username;
+    const targetUser = users.find(user => user.username.toLowerCase() === targetUsername.toLowerCase());
+
+    if (!targetUser) {
+        showToast('Usuário não encontrado.', 'error');
+        return;
+    }
+
+    if (currentUser.role !== 'admin' && targetUser.username.toLowerCase() !== currentUser.username.toLowerCase()) {
+        showToast('Você só pode alterar sua própria senha.', 'error');
+        return;
+    }
+
+    const currentPasswordInput = document.getElementById('current-password');
+    const newPasswordInput = document.getElementById('new-password');
+    const confirmPasswordInput = document.getElementById('confirm-password');
+    const currentPassword = currentPasswordInput ? currentPasswordInput.value : '';
+    const newPassword = newPasswordInput ? newPasswordInput.value : '';
+    const confirmPassword = confirmPasswordInput ? confirmPasswordInput.value : '';
+
+    if (!newPassword || newPassword.length < 4) {
+        showToast('A nova senha deve ter pelo menos 4 caracteres.', 'error');
+        return;
+    }
+
+    if (newPassword !== confirmPassword) {
+        showToast('A confirmação da nova senha não confere.', 'error');
+        return;
+    }
+
+    if (currentUser.role !== 'admin') {
+        if (!currentPassword) {
+            showToast('Digite sua senha atual para alterar a senha.', 'error');
+            return;
+        }
+
+        const isCurrentPasswordValid = await verifyPassword(currentPassword, targetUser.password || '');
+        if (!isCurrentPasswordValid) {
+            showToast('Senha atual incorreta.', 'error');
+            return;
+        }
+    }
+
+    targetUser.password = await hashPassword(newPassword);
+    targetUser.lastPasswordChange = new Date().toISOString();
+    addAuditLog(currentUser.username, 'Alteração de senha', `Senha alterada para ${targetUser.username}`);
+    await persistRegistrations();
+    renderDashboard();
+    showToast('Senha alterada com sucesso.', 'success');
 }
 
 async function clearAuditLog() {
@@ -707,6 +821,7 @@ function renderDashboard() {
     renderTable();
     const currentUserName = getCurrentUserName();
     const currentUser = users.find(user => user.username.toLowerCase() === currentUserName.toLowerCase());
+    renderPasswordManagementPanel(currentUser);
     renderAdminAuditPanel(currentUser);
 
     // Render Chart

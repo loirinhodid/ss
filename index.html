@@ -221,6 +221,31 @@
                         </form>
                     </div>
 
+                    <div id="password-management-panel" class="admin-section" style="display: none;">
+                        <div class="admin-section-title">Gerenciar senha</div>
+                        <form id="password-change-form" class="user-form" novalidate>
+                            <div class="form-group">
+                                <label for="password-user-select">Usuário</label>
+                                <select id="password-user-select" class="form-input"></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="current-password">Senha atual</label>
+                                <input type="password" id="current-password" class="form-input" placeholder="Digite a senha atual" autocomplete="current-password">
+                            </div>
+                            <div class="form-group">
+                                <label for="new-password">Nova senha</label>
+                                <input type="password" id="new-password" class="form-input" placeholder="Digite a nova senha" required autocomplete="new-password">
+                            </div>
+                            <div class="form-group">
+                                <label for="confirm-password">Confirmar nova senha</label>
+                                <input type="password" id="confirm-password" class="form-input" placeholder="Confirme a nova senha" required autocomplete="new-password">
+                            </div>
+                            <button type="submit" class="btn-submit" id="btn-change-password">
+                                <span>Alterar senha</span>
+                            </button>
+                        </form>
+                    </div>
+
                     <div class="admin-section">
                         <div class="admin-section-title">Usuários cadastrados</div>
                         <div class="table-container audit-table-container">
