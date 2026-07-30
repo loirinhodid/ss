@@ -66,27 +66,56 @@ async function initApp() {
     showTab('signup-tab');
 }
 
+function getStoredSessionState() {
+    const storedSessionState = localStorage.getItem('beta_portal_session_state');
+    if (!storedSessionState) return null;
+
+    try {
+        const parsedSessionState = JSON.parse(storedSessionState);
+        return {
+            dashboardUnlocked: Boolean(parsedSessionState.dashboardUnlocked),
+            currentUser: typeof parsedSessionState.currentUser === 'string' ? parsedSessionState.currentUser : '',
+            lastParticipationChoice: parsedSessionState.lastParticipationChoice === 'no' ? 'no' : 'yes',
+            lastUpdated: typeof parsedSessionState.lastUpdated === 'string' ? parsedSessionState.lastUpdated : new Date().toISOString()
+        };
+    } catch (error) {
+        return null;
+    }
+}
+
+function applySharedDataFromBackend(data, { preserveLocalSession = true } = {}) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        return;
+    }
+
+    registrations = Array.isArray(data.registrations) ? data.registrations : [];
+
+    const savedSessionState = preserveLocalSession ? getStoredSessionState() : null;
+    sessionState = savedSessionState ? {
+        dashboardUnlocked: Boolean(savedSessionState.dashboardUnlocked),
+        currentUser: typeof savedSessionState.currentUser === 'string' ? savedSessionState.currentUser : '',
+        lastParticipationChoice: savedSessionState.lastParticipationChoice === 'no' ? 'no' : 'yes',
+        lastUpdated: typeof savedSessionState.lastUpdated === 'string' ? savedSessionState.lastUpdated : new Date().toISOString()
+    } : {
+        dashboardUnlocked: false,
+        currentUser: '',
+        lastParticipationChoice: 'yes',
+        lastUpdated: new Date().toISOString()
+    };
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(registrations));
+    localStorage.setItem('beta_portal_session_state', JSON.stringify(sessionState));
+    ensureDefaultAdminUser();
+    applySessionStateToUi();
+}
+
 async function loadRegistrations() {
     try {
         const response = await fetch(API_ENDPOINT);
         if (response.ok) {
             const data = await response.json();
             if (data && typeof data === 'object' && !Array.isArray(data)) {
-                registrations = Array.isArray(data.registrations) ? data.registrations : [];
-                users = Array.isArray(data.users) ? data.users : [];
-                auditLog = Array.isArray(data.auditLog) ? data.auditLog : [];
-                sessionState = {
-                    dashboardUnlocked: Boolean(data.sessionState?.dashboardUnlocked),
-                    currentUser: typeof data.sessionState?.currentUser === 'string' ? data.sessionState.currentUser : '',
-                    lastParticipationChoice: data.sessionState?.lastParticipationChoice === 'no' ? 'no' : 'yes',
-                    lastUpdated: typeof data.sessionState?.lastUpdated === 'string' ? data.sessionState.lastUpdated : new Date().toISOString()
-                };
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(registrations));
-                localStorage.setItem('beta_portal_users', JSON.stringify(users));
-                localStorage.setItem('beta_portal_audit_log', JSON.stringify(auditLog));
-                localStorage.setItem('beta_portal_session_state', JSON.stringify(sessionState));
-                ensureDefaultAdminUser();
-                applySessionStateToUi();
+                applySharedDataFromBackend(data, { preserveLocalSession: true });
                 return;
             }
 
@@ -199,7 +228,7 @@ async function persistRegistrations() {
         await fetch(API_ENDPOINT, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ registrations, users, auditLog, sessionState })
+            body: JSON.stringify({ registrations })
         });
     } catch (error) {
         console.warn('Não foi possível sincronizar os registros com o arquivo JSON.', error);
@@ -330,28 +359,18 @@ async function syncSharedStateFromBackend() {
         const data = await response.json();
         if (!data || typeof data !== 'object' || Array.isArray(data)) return;
 
-        const remoteSessionState = data.sessionState;
-        if (!remoteSessionState || typeof remoteSessionState !== 'object') return;
+        const remoteRegistrations = Array.isArray(data.registrations) ? data.registrations : [];
+        const localSignature = JSON.stringify(registrations);
+        const remoteSignature = JSON.stringify(remoteRegistrations);
 
-        const remoteUpdatedAt = remoteSessionState.lastUpdated ? Date.parse(remoteSessionState.lastUpdated) : 0;
-        const localUpdatedAt = sessionState.lastUpdated ? Date.parse(sessionState.lastUpdated) : 0;
+        if (localSignature === remoteSignature) return;
 
-        if (Number.isNaN(remoteUpdatedAt) || remoteUpdatedAt <= localUpdatedAt) return;
-
-        sessionState = {
-            dashboardUnlocked: Boolean(remoteSessionState.dashboardUnlocked),
-            currentUser: typeof remoteSessionState.currentUser === 'string' ? remoteSessionState.currentUser : '',
-            lastParticipationChoice: remoteSessionState.lastParticipationChoice === 'no' ? 'no' : 'yes',
-            lastUpdated: typeof remoteSessionState.lastUpdated === 'string' ? remoteSessionState.lastUpdated : new Date().toISOString()
-        };
-
-        localStorage.setItem('beta_portal_session_state', JSON.stringify(sessionState));
-        applySessionStateToUi();
-        if (document.getElementById('dashboard-content').style.display === 'block') {
+        applySharedDataFromBackend(data, { preserveLocalSession: true });
+        if (document.getElementById('dashboard-content').style.display === 'block' || sessionState.dashboardUnlocked) {
             renderDashboard();
         }
     } catch (error) {
-        console.warn('Não foi possível sincronizar o estado compartilhado com o backend.', error);
+        console.warn('Não foi possível sincronizar as inscrições compartilhadas com o backend.', error);
     }
 }
 

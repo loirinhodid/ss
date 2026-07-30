@@ -8,7 +8,7 @@ process.env.DATA_FILE = tempDataFile;
 
 const { writeRegistrationsFile, readRegistrationsFile } = require('../server.js');
 
-test('persists shared session state and registration data', () => {
+test('persists shared registration data while sanitizing sensitive session state', () => {
   const payload = {
     registrations: [{ name: 'Ana', email: 'ana@example.com', participate: 'yes', date: '2026-01-01T00:00:00.000Z' }],
     users: [{ username: 'admin', role: 'admin', password: 'hash' }],
@@ -25,7 +25,7 @@ test('persists shared session state and registration data', () => {
   const result = readRegistrationsFile();
 
   assert.deepEqual(result.registrations, payload.registrations);
-  assert.equal(result.sessionState.dashboardUnlocked, true);
-  assert.equal(result.sessionState.currentUser, 'admin');
-  assert.equal(result.sessionState.lastParticipationChoice, 'no');
+  assert.equal(result.sessionState.dashboardUnlocked, false);
+  assert.equal(result.sessionState.currentUser, '');
+  assert.equal(result.sessionState.lastParticipationChoice, 'yes');
 });

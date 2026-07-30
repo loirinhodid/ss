@@ -27,17 +27,25 @@ function createDefaultSessionState() {
     };
 }
 
-function normalizeSessionState(value) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        return createDefaultSessionState();
-    }
+function normalizeSessionState() {
+    return createDefaultSessionState();
+}
 
-    return {
-        dashboardUnlocked: Boolean(value.dashboardUnlocked),
-        currentUser: typeof value.currentUser === 'string' ? value.currentUser : '',
-        lastParticipationChoice: value.lastParticipationChoice === 'no' ? 'no' : 'yes',
-        lastUpdated: typeof value.lastUpdated === 'string' ? value.lastUpdated : new Date().toISOString()
+function buildPersistedPayload(data) {
+    const safeSessionState = normalizeSessionState();
+    const registrations = data && typeof data === 'object' && !Array.isArray(data) && Array.isArray(data.registrations)
+        ? data.registrations
+        : Array.isArray(data) ? data : [];
+
+    const payload = {
+        registrations,
+        users: [],
+        auditLog: [],
+        sessionState: safeSessionState
     };
+
+    payload.sessionState.lastUpdated = new Date().toISOString();
+    return payload;
 }
 
 function readRegistrationsFile() {
@@ -46,20 +54,10 @@ function readRegistrationsFile() {
         const parsed = JSON.parse(content);
 
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            return {
-                registrations: Array.isArray(parsed.registrations) ? parsed.registrations : [],
-                users: Array.isArray(parsed.users) ? parsed.users : [],
-                auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
-                sessionState: normalizeSessionState(parsed.sessionState)
-            };
+            return buildPersistedPayload(parsed);
         }
 
-        return {
-            registrations: Array.isArray(parsed) ? parsed : [],
-            users: [],
-            auditLog: [],
-            sessionState: createDefaultSessionState()
-        };
+        return buildPersistedPayload(parsed);
     } catch (error) {
         if (error.code !== 'ENOENT') {
             console.warn('Não foi possível ler data.json:', error);
@@ -70,15 +68,7 @@ function readRegistrationsFile() {
 }
 
 function writeRegistrationsFile(data) {
-    const payload = data && typeof data === 'object' && !Array.isArray(data)
-        ? {
-            registrations: Array.isArray(data.registrations) ? data.registrations : [],
-            users: Array.isArray(data.users) ? data.users : [],
-            auditLog: Array.isArray(data.auditLog) ? data.auditLog : [],
-            sessionState: normalizeSessionState(data.sessionState)
-          }
-        : { registrations: Array.isArray(data) ? data : [], users: [], auditLog: [], sessionState: createDefaultSessionState() };
-
+    const payload = buildPersistedPayload(data);
     fs.writeFileSync(DATA_FILE, JSON.stringify(payload, null, 2), 'utf8');
 }
 
@@ -118,9 +108,10 @@ const server = http.createServer((req, res) => {
                 }
 
                 if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    const persistedPayload = buildPersistedPayload(parsed);
                     writeRegistrationsFile(parsed);
                     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-                    res.end(JSON.stringify(parsed));
+                    res.end(JSON.stringify(persistedPayload));
                     return;
                 }
 
