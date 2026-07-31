@@ -2,10 +2,12 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { DatabaseSync } = require('node:sqlite');
 
 const PORT = process.env.PORT || 8000;
 const PUBLIC_DIR = path.resolve(__dirname);
 const DATA_FILE = process.env.DATA_FILE || path.join(PUBLIC_DIR, 'data.json');
+let sqliteConnection = null;
 
 const MIME_TYPES = {
     '.html': 'text/html',
@@ -32,7 +34,6 @@ function normalizeSessionState() {
 }
 
 function buildPersistedPayload(data) {
-    const safeSessionState = normalizeSessionState();
     const source = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
     const registrations = Array.isArray(source.registrations)
         ? source.registrations
@@ -57,28 +58,99 @@ function buildPersistedPayload(data) {
     return payload;
 }
 
+function getDatabasePath() {
+    if (process.env.DB_FILE) {
+        return process.env.DB_FILE;
+    }
+
+    const extension = path.extname(DATA_FILE);
+    if (extension) {
+        return path.join(path.dirname(DATA_FILE), `${path.basename(DATA_FILE, extension)}.sqlite`);
+    }
+
+    return `${DATA_FILE}.sqlite`;
+}
+
+function getDatabaseConnection() {
+    if (sqliteConnection) {
+        return sqliteConnection;
+    }
+
+    sqliteConnection = new DatabaseSync(getDatabasePath());
+    sqliteConnection.exec(`
+        CREATE TABLE IF NOT EXISTS app_state (
+            key TEXT PRIMARY KEY,
+            payload TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+    `);
+
+    return sqliteConnection;
+}
+
+function persistPayloadToDatabase(payload) {
+    const db = getDatabaseConnection();
+    const timestamp = new Date().toISOString();
+    const serializedPayload = JSON.stringify(payload);
+
+    db.prepare(`
+        INSERT INTO app_state (key, payload, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            payload = excluded.payload,
+            updated_at = excluded.updated_at
+    `).run('registrations', serializedPayload, timestamp);
+}
+
+function loadPayloadFromDatabase() {
+    try {
+        const row = getDatabaseConnection().prepare('SELECT payload FROM app_state WHERE key = ?').get('registrations');
+        if (!row || typeof row.payload !== 'string') {
+            return null;
+        }
+
+        return JSON.parse(row.payload);
+    } catch (error) {
+        console.warn('Não foi possível ler o banco SQLite:', error);
+        return null;
+    }
+}
+
 function readRegistrationsFile() {
+    const persistedFromDatabase = loadPayloadFromDatabase();
+    if (persistedFromDatabase) {
+        return buildPersistedPayload(persistedFromDatabase);
+    }
+
     try {
         const content = fs.readFileSync(DATA_FILE, 'utf8');
         const parsed = JSON.parse(content);
-
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            return buildPersistedPayload(parsed);
-        }
-
-        return buildPersistedPayload(parsed);
+        const payload = buildPersistedPayload(parsed);
+        persistPayloadToDatabase(payload);
+        return payload;
     } catch (error) {
         if (error.code !== 'ENOENT') {
             console.warn('Não foi possível ler data.json:', error);
         }
-        fs.writeFileSync(DATA_FILE, JSON.stringify({ registrations: [], users: [], auditLog: [], sessionState: createDefaultSessionState() }, null, 2), 'utf8');
-        return { registrations: [], users: [], auditLog: [], sessionState: createDefaultSessionState() };
+
+        const emptyPayload = {
+            registrations: [],
+            users: [],
+            auditLog: [],
+            sessionState: createDefaultSessionState()
+        };
+
+        persistPayloadToDatabase(emptyPayload);
+        fs.writeFileSync(DATA_FILE, JSON.stringify(emptyPayload, null, 2), 'utf8');
+        return buildPersistedPayload(emptyPayload);
     }
 }
 
 function writeRegistrationsFile(data) {
     const payload = buildPersistedPayload(data);
+    persistPayloadToDatabase(payload);
     fs.writeFileSync(DATA_FILE, JSON.stringify(payload, null, 2), 'utf8');
+    return payload;
 }
 
 const server = http.createServer((req, res) => {
