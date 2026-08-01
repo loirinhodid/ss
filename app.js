@@ -1,8 +1,5 @@
 // State and storage keys
 const STORAGE_KEY = 'beta_portal_real_registrations';
-const SESSION_UNLOCK_KEY = 'dashboard_unlocked';
-const CURRENT_USER_KEY = 'dashboard_current_user';
-const PARTICIPATION_CHOICE_KEY = 'beta_portal_last_choice';
 const API_ENDPOINT = '/api/registrations';
 const DEFAULT_ADMIN_USERNAME = 'admin';
 
@@ -21,6 +18,13 @@ function createDefaultSessionState() {
         lastParticipationChoice: 'yes',
         lastUpdated: new Date().toISOString()
     };
+}
+
+function generateClientId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+    }
+    return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 class UserAccount {
@@ -85,8 +89,7 @@ async function initApp() {
         }
     });
     window.setInterval(() => syncSharedStateFromBackend(), 5000);
-    
-    // Default tab check
+
     showTab('signup-tab');
 }
 
@@ -239,23 +242,49 @@ async function persistRegistrations() {
     localStorage.setItem('beta_portal_session_state', JSON.stringify(sessionState));
 
     try {
-        await fetch(API_ENDPOINT, {
+        const response = await fetch(API_ENDPOINT, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ registrations, users, auditLog, sessionState })
         });
+        if (response.ok) {
+            const data = await response.json();
+            // O servidor faz merge com o que outros usuários já gravaram;
+            // aplicamos o resultado de volta para não perder essas entradas.
+            applySharedDataFromBackend(data, { preserveLocalSession: true });
+        }
     } catch (error) {
-        console.warn('Não foi possível sincronizar os registros com o arquivo JSON.', error);
+        console.warn('Não foi possível sincronizar os registros com o servidor. As alterações ficaram salvas apenas neste navegador.', error);
+        showToast('Sem conexão com o servidor — alterações salvas só neste navegador por enquanto.', 'error');
+    }
+}
+
+// Chama um endpoint dedicado (delete/clear) e aplica o payload retornado.
+async function callStateEndpoint(path, body) {
+    try {
+        const response = await fetch(path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body || {})
+        });
+        if (!response.ok) {
+            const errorBody = await response.json().catch(() => ({}));
+            showToast(errorBody.error || 'Não foi possível concluir a ação.', 'error');
+            return null;
+        }
+        return await response.json();
+    } catch (error) {
+        console.warn(`Não foi possível chamar ${path}.`, error);
+        showToast('Sem conexão com o servidor.', 'error');
+        return null;
     }
 }
 
 // Event Listeners setup
 function setupEventListeners() {
-    // Tab switching
     document.getElementById('nav-signup').addEventListener('click', () => showTab('signup-tab'));
     document.getElementById('nav-dashboard').addEventListener('click', () => showTab('dashboard-tab'));
 
-    // Beta choices selection interaction
     const choiceCards = document.querySelectorAll('.choice-card');
     choiceCards.forEach(card => {
         card.addEventListener('click', () => {
@@ -269,27 +298,19 @@ function setupEventListeners() {
         });
     });
 
-    // Form submission
     document.getElementById('beta-form').addEventListener('submit', handleFormSubmit);
-
-    // Password unlock
     document.getElementById('lock-form').addEventListener('submit', handleUnlockAttempt);
-
-    // Lock Dashboard Action
     document.getElementById('btn-lock-db').addEventListener('click', lockDashboard);
     document.getElementById('btn-clear-all').addEventListener('click', clearAllRegistrations);
     document.getElementById('btn-toggle-bot-protection').addEventListener('click', toggleBotProtection);
     document.getElementById('admin-user-form').addEventListener('submit', handleAdminCreateUser);
     document.getElementById('password-change-form').addEventListener('submit', handlePasswordChange);
     document.getElementById('btn-clear-audit-log').addEventListener('click', clearAuditLog);
-
 }
 
-// Show specific tab and perform necessary rendering
 function showTab(tabId) {
-    // Update active tab buttons
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-    
+
     if (tabId === 'signup-tab') {
         document.getElementById('nav-signup').classList.add('active');
         document.getElementById('signup-view').classList.add('active');
@@ -298,15 +319,13 @@ function showTab(tabId) {
         document.getElementById('nav-dashboard').classList.add('active');
         document.getElementById('dashboard-view').classList.add('active');
         document.getElementById('signup-view').classList.remove('active');
-        
-        // If unlocked, render dashboard components
+
         if (sessionState.dashboardUnlocked) {
             renderDashboard();
         }
     }
 }
 
-// Check locked state and show appropriate UI in Dashboard view
 function applySessionStateToUi() {
     const lockScreen = document.getElementById('lock-screen');
     const dashboardContent = document.getElementById('dashboard-content');
@@ -352,11 +371,8 @@ async function refreshBotProtectionStatus() {
 }
 
 async function toggleBotProtection() {
-    const button = document.getElementById('btn-toggle-bot-protection');
     const label = document.getElementById('bot-protection-label');
-    const status = document.getElementById('bot-protection-status');
-
-    if (!button || !label || !status) return;
+    if (!label) return;
 
     const nextEnabled = label.textContent?.includes('Ativar') ?? false;
 
@@ -409,6 +425,7 @@ function setCurrentUserName(username) {
 
 function addAuditLog(user, action, details) {
     auditLog.unshift({
+        id: generateClientId(),
         user,
         action,
         details,
@@ -647,10 +664,12 @@ async function clearAuditLog() {
     const confirmed = window.confirm('Deseja realmente limpar o log de acesso?');
     if (!confirmed) return;
 
-    auditLog = [];
-    await persistRegistrations();
-    renderDashboard();
-    showToast('Log de acesso limpo com sucesso.', 'success');
+    const data = await callStateEndpoint('/api/audit-log/clear', { actingUser: currentUser.username });
+    if (data) {
+        applySharedDataFromBackend(data, { preserveLocalSession: true });
+        renderDashboard();
+        showToast('Log de acesso limpo com sucesso.', 'success');
+    }
 }
 
 async function removeDashboardUser(username) {
@@ -676,11 +695,12 @@ async function removeDashboardUser(username) {
     const confirmed = window.confirm(`Deseja remover o usuário ${targetUser.username} do painel?`);
     if (!confirmed) return;
 
-    users = users.filter(user => user.username.toLowerCase() !== username.toLowerCase());
-    addAuditLog(currentUser.username, 'Remoção de usuário', `Usuário ${targetUser.username} removido do painel`);
-    await persistRegistrations();
-    renderDashboard();
-    showToast('Usuário removido do painel.', 'success');
+    const data = await callStateEndpoint('/api/users/remove', { username: targetUser.username, actingUser: currentUser.username });
+    if (data) {
+        applySharedDataFromBackend(data, { preserveLocalSession: true });
+        renderDashboard();
+        showToast('Usuário removido do painel.', 'success');
+    }
 }
 
 async function handleUnlockAttempt(e) {
@@ -800,7 +820,6 @@ async function handleUnlockAttempt(e) {
     }
 }
 
-// Lock dashboard manually
 function lockDashboard() {
     sessionState.dashboardUnlocked = false;
     setCurrentUserName('');
@@ -809,83 +828,73 @@ function lockDashboard() {
     showToast('Painel bloqueado com segurança.', 'success');
 }
 
-// Form Submission handling
 async function handleFormSubmit(e) {
     e.preventDefault();
-    
+
     const nameInput = document.getElementById('user-name');
     const emailInput = document.getElementById('user-email');
     const choiceRadio = document.querySelector('input[name="beta-choice"]:checked');
-    
+
     const name = nameInput.value.trim();
     const email = emailInput.value.trim();
-    
+
     if (!name || !email) {
         showToast('Por favor, preencha todos os campos.', 'error');
         return;
     }
-    
+
     if (!choiceRadio) {
         showToast('Por favor, informe se deseja participar do programa.', 'error');
         return;
     }
-    
+
     const choice = choiceRadio.value;
     updateParticipationPreference(choice);
-    
-    // Create registration record
+
     const newRecord = {
+        id: generateClientId(),
         name,
         email,
         participate: choice,
         date: new Date().toISOString()
     };
-    
+
     registrations.push(newRecord);
     await persistRegistrations();
-    
-    // Feedback to user
+
     showToast('Inscrição realizada com sucesso!', 'success');
-    
-    // Reset Form
+
     nameInput.value = '';
     emailInput.value = '';
-    
-    // Reset custom selector cards to Yes by default
+
     document.querySelectorAll('.choice-card').forEach(card => card.classList.remove('selected'));
     const defaultCard = document.querySelector('.choice-card.yes-choice');
     defaultCard.classList.add('selected');
     document.getElementById('choice-yes').checked = true;
 }
 
-// Dashboard statistics & component rendering
 function renderDashboard() {
     const totalCount = registrations.length;
     const yesCount = registrations.filter(r => r.participate === 'yes').length;
     const noCount = registrations.filter(r => r.participate === 'no').length;
 
-    // Update text KPI values
     document.getElementById('stat-total').textContent = totalCount;
     document.getElementById('stat-yes').textContent = yesCount;
     document.getElementById('stat-no').textContent = noCount;
 
-    // Render Data Table
     renderTable();
     const currentUserName = getCurrentUserName();
     const currentUser = users.find(user => user.username.toLowerCase() === currentUserName.toLowerCase());
     renderPasswordManagementPanel(currentUser);
     renderAdminAuditPanel(currentUser);
 
-    // Render Chart
     renderChart(yesCount, noCount);
 }
 
-// Table rendering logic
 function renderTable() {
     const tableBody = document.getElementById('data-table-body');
     tableBody.innerHTML = '';
 
-    // Sort registrations: newest first
     const sorted = registrations
         .map((record, index) => ({ record, index }))
         .sort((a, b) => new Date(b.record.date) - new Date(a.record.date));
@@ -907,19 +916,19 @@ function renderTable() {
 
     sorted.forEach(({ record, index }) => {
         const tr = document.createElement('tr');
-        
+
         const tdName = document.createElement('td');
         tdName.textContent = record.name;
-        
+
         const tdEmail = document.createElement('td');
         tdEmail.textContent = record.email;
-        
+
         const tdChoice = document.createElement('td');
         const badge = document.createElement('span');
         badge.className = `badge ${record.participate === 'yes' ? 'badge-yes' : 'badge-no'}`;
         badge.textContent = record.participate === 'yes' ? 'Quero' : 'Não Quero';
         tdChoice.appendChild(badge);
-        
+
         const tdDate = document.createElement('td');
         const dateObj = new Date(record.date);
         tdDate.textContent = dateObj.toLocaleDateString('pt-BR') + ' ' + dateObj.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -939,13 +948,13 @@ function renderTable() {
 
         tdActions.appendChild(editBtn);
         tdActions.appendChild(deleteBtn);
-        
+
         tr.appendChild(tdName);
         tr.appendChild(tdEmail);
         tr.appendChild(tdChoice);
         tr.appendChild(tdDate);
         tr.appendChild(tdActions);
-        
+
         tableBody.appendChild(tr);
     });
 }
@@ -990,11 +999,12 @@ async function deleteRegistration(index) {
     const confirmed = window.confirm(`Excluir o registro de ${record.name}?`);
     if (!confirmed) return;
 
-    registrations.splice(index, 1);
-    addAuditLog('admin', 'Exclusão', `Registro ${record.name} removido`);
-    await persistRegistrations();
-    renderDashboard();
-    showToast('Registro removido com sucesso!', 'success');
+    const data = await callStateEndpoint(`${API_ENDPOINT}/delete`, { id: record.id, actingUser: getCurrentUserName() });
+    if (data) {
+        applySharedDataFromBackend(data, { preserveLocalSession: true });
+        renderDashboard();
+        showToast('Registro removido com sucesso!', 'success');
+    }
 }
 
 async function clearAllRegistrations() {
@@ -1018,21 +1028,18 @@ async function clearAllRegistrations() {
     const confirmed = window.confirm('Deseja realmente apagar todos os registros e usuários?');
     if (!confirmed) return;
 
-    registrations = [];
-    users = [];
-    auditLog = [];
-    ensureDefaultAdminUser();
-    addAuditLog('admin', 'Limpeza', 'Todos os registros e usuários foram removidos');
-    await persistRegistrations();
-    renderDashboard();
-    showToast('Todos os registros e usuários foram removidos.', 'success');
+    const data = await callStateEndpoint(`${API_ENDPOINT}/clear-all`, { actingUser: currentAdmin.username });
+    if (data) {
+        applySharedDataFromBackend(data, { preserveLocalSession: true });
+        renderDashboard();
+        showToast('Todos os registros e usuários foram removidos.', 'success');
+    }
 }
 
-// Chart.js doughnut chart rendering
 function renderChart(yesVal, noVal) {
     const canvas = document.getElementById('statsChart');
     const placeholder = document.getElementById('chart-placeholder');
-    
+
     if (yesVal === 0 && noVal === 0) {
         canvas.style.display = 'none';
         placeholder.style.display = 'flex';
@@ -1042,18 +1049,16 @@ function renderChart(yesVal, noVal) {
         }
         return;
     }
-    
+
     canvas.style.display = 'block';
     placeholder.style.display = 'none';
-    
+
     const ctx = canvas.getContext('2d');
-    
-    // Destroy previous chart to prevent render conflicts on data updates
+
     if (chartInstance) {
         chartInstance.destroy();
     }
 
-    // Chart.js Configurations
     chartInstance = new Chart(ctx, {
         type: 'doughnut',
         data: {
@@ -1061,8 +1066,8 @@ function renderChart(yesVal, noVal) {
             datasets: [{
                 data: [yesVal, noVal],
                 backgroundColor: [
-                    '#00f2fe',  // Cyan color
-                    '#ff007f'   // Pink/magenta color
+                    '#00f2fe',
+                    '#ff007f'
                 ],
                 borderColor: '#0f1126',
                 borderWidth: 3,
@@ -1101,23 +1106,20 @@ function renderChart(yesVal, noVal) {
     });
 }
 
-// Toast alerts creation helper
 function showToast(message, type = 'success') {
     const container = document.getElementById('toast-container');
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
-    
+
     const icon = type === 'success' ? '✓' : '✗';
     toast.innerHTML = `<span style="font-weight: bold; font-size: 1.1rem;">${icon}</span> <span>${message}</span>`;
-    
+
     container.appendChild(toast);
-    
-    // Animation in
+
     setTimeout(() => {
         toast.classList.add('show');
     }, 10);
-    
-    // Auto remove after 3.5 seconds
+
     setTimeout(() => {
         toast.classList.remove('show');
         setTimeout(() => {
@@ -1126,5 +1128,4 @@ function showToast(message, type = 'success') {
     }, 3500);
 }
 
-// Initialize on page load
 window.addEventListener('DOMContentLoaded', initApp);

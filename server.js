@@ -1,7 +1,7 @@
-
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
 const PORT = process.env.PORT || 8000;
@@ -22,6 +22,10 @@ const MIME_TYPES = {
     '.svg': 'image/svg+xml'
 };
 
+function generateId() {
+    return crypto.randomUUID();
+}
+
 function createDefaultSessionState() {
     return {
         dashboardUnlocked: false,
@@ -35,21 +39,69 @@ function normalizeSessionState() {
     return createDefaultSessionState();
 }
 
+// ---------------------------------------------------------------------
+// BUG CORRIGIDO: antes, cada item sem "id" perdia a identidade a cada
+// sincronização, e um snapshot completo enviado por um cliente (por ex.
+// depois de um `focus` de aba) podia SOBRESCREVER por completo o que
+// outro usuário tinha acabado de gravar no servidor - por isso registros
+// "desapareciam" depois de atualizações. Agora fazemos merge por "id",
+// preservando entradas que existem apenas de um dos lados.
+// ---------------------------------------------------------------------
+function ensureId(item) {
+    const copy = { ...item };
+    if (!copy.id) {
+        copy.id = generateId();
+    }
+    return copy;
+}
+
+function mergeRecordsById(existingList, incomingList) {
+    const map = new Map();
+    (Array.isArray(existingList) ? existingList : []).forEach(item => {
+        const withId = ensureId(item);
+        map.set(withId.id, withId);
+    });
+    (Array.isArray(incomingList) ? incomingList : []).forEach(item => {
+        const withId = ensureId(item);
+        map.set(withId.id, withId); // o mais recente enviado "vence" em caso de edição
+    });
+    return Array.from(map.values());
+}
+
+function mergeUsersByUsername(existingList, incomingList) {
+    const map = new Map();
+    (Array.isArray(existingList) ? existingList : []).forEach(user => {
+        if (user && user.username) map.set(user.username.toLowerCase(), user);
+    });
+    (Array.isArray(incomingList) ? incomingList : []).forEach(user => {
+        if (user && user.username) map.set(user.username.toLowerCase(), user);
+    });
+    return Array.from(map.values());
+}
+
 function buildPersistedPayload(data, previousPayload = null) {
     const source = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
     const previous = previousPayload && typeof previousPayload === 'object' && !Array.isArray(previousPayload) ? previousPayload : {};
     const previousSessionState = previous.sessionState && typeof previous.sessionState === 'object' ? previous.sessionState : {};
 
     const hasRegistrationsField = Object.prototype.hasOwnProperty.call(source, 'registrations');
-    const registrations = hasRegistrationsField
+    const incomingRegistrations = hasRegistrationsField
         ? (Array.isArray(source.registrations) ? source.registrations : Array.isArray(data) ? data : [])
+        : [];
+    const registrations = hasRegistrationsField
+        ? mergeRecordsById(previous.registrations, incomingRegistrations)
         : (Array.isArray(previous.registrations) ? previous.registrations : []);
 
     const hasUsersField = Object.prototype.hasOwnProperty.call(source, 'users');
-    const users = hasUsersField ? (Array.isArray(source.users) ? source.users : []) : (Array.isArray(previous.users) ? previous.users : []);
+    const users = hasUsersField
+        ? mergeUsersByUsername(previous.users, Array.isArray(source.users) ? source.users : [])
+        : (Array.isArray(previous.users) ? previous.users : []);
 
     const hasAuditLogField = Object.prototype.hasOwnProperty.call(source, 'auditLog');
-    const auditLog = hasAuditLogField ? (Array.isArray(source.auditLog) ? source.auditLog : []) : (Array.isArray(previous.auditLog) ? previous.auditLog : []);
+    const auditLog = hasAuditLogField
+        ? mergeRecordsById(previous.auditLog, Array.isArray(source.auditLog) ? source.auditLog : [])
+            .sort((a, b) => new Date(b.date) - new Date(a.date))
+        : (Array.isArray(previous.auditLog) ? previous.auditLog : []);
 
     const sessionState = {
         dashboardUnlocked: false,
@@ -74,6 +126,22 @@ function buildPersistedPayload(data, previousPayload = null) {
 
     payload.sessionState.lastUpdated = new Date().toISOString();
     return payload;
+}
+
+// Grava um payload já pronto (sem merge). Usado pelas ações de exclusão,
+// onde o merge por id resultaria em "ressuscitar" o item apagado.
+function persistRawPayload(payload) {
+    const finalPayload = {
+        registrations: Array.isArray(payload.registrations) ? payload.registrations : [],
+        users: Array.isArray(payload.users) ? payload.users : [],
+        auditLog: Array.isArray(payload.auditLog) ? payload.auditLog : [],
+        sessionState: payload.sessionState && typeof payload.sessionState === 'object' ? payload.sessionState : createDefaultSessionState()
+    };
+    finalPayload.sessionState.lastUpdated = new Date().toISOString();
+    persistPayloadToDatabase(finalPayload);
+    writePayloadToDisk(finalPayload);
+    currentPersistedPayload = finalPayload;
+    return finalPayload;
 }
 
 function getDatabasePath() {
@@ -214,6 +282,7 @@ function writeRegistrationsFile(data) {
 function recordAuditEvent(user, action, details) {
     const previousPayload = readRegistrationsFile();
     const nextAuditLog = [{
+        id: generateId(),
         user,
         action,
         details,
@@ -232,6 +301,64 @@ function recordAuditEvent(user, action, details) {
     return payload;
 }
 
+function isAdminUser(username) {
+    if (!username) return false;
+    const payload = readRegistrationsFile();
+    const user = (payload.users || []).find(u => u.username && u.username.toLowerCase() === String(username).toLowerCase());
+    return Boolean(user && user.role === 'admin');
+}
+
+function removeRegistrationById(id, actingUser) {
+    const previousPayload = readRegistrationsFile();
+    const nextRegistrations = (previousPayload.registrations || []).filter(r => r.id !== id);
+    persistRawPayload({
+        registrations: nextRegistrations,
+        users: previousPayload.users,
+        auditLog: previousPayload.auditLog,
+        sessionState: previousPayload.sessionState
+    });
+    return recordAuditEvent(actingUser || 'admin', 'Exclusão', `Registro ${id} removido`);
+}
+
+function removeUserByUsername(username, actingUser) {
+    const previousPayload = readRegistrationsFile();
+    const target = (previousPayload.users || []).find(u => u.username.toLowerCase() === String(username).toLowerCase());
+    if (!target || target.role === 'admin') {
+        return previousPayload;
+    }
+    const nextUsers = (previousPayload.users || []).filter(u => u.username.toLowerCase() !== String(username).toLowerCase());
+    persistRawPayload({
+        registrations: previousPayload.registrations,
+        users: nextUsers,
+        auditLog: previousPayload.auditLog,
+        sessionState: previousPayload.sessionState
+    });
+    return recordAuditEvent(actingUser || 'admin', 'Remoção de usuário', `Usuário ${username} removido do painel`);
+}
+
+function clearAllData(actingUser) {
+    const previousPayload = readRegistrationsFile();
+    const adminUser = (previousPayload.users || []).find(u => u.username && u.username.toLowerCase() === 'admin');
+    persistRawPayload({
+        registrations: [],
+        users: adminUser ? [adminUser] : [],
+        auditLog: [],
+        sessionState: previousPayload.sessionState
+    });
+    return recordAuditEvent(actingUser || 'admin', 'Limpeza', 'Todos os registros e usuários foram removidos');
+}
+
+function clearAuditLogData(actingUser) {
+    const previousPayload = readRegistrationsFile();
+    persistRawPayload({
+        registrations: previousPayload.registrations,
+        users: previousPayload.users,
+        auditLog: [],
+        sessionState: previousPayload.sessionState
+    });
+    return recordAuditEvent(actingUser || 'admin', 'Log limpo', 'Log de acesso foi limpo');
+}
+
 function getBotProtectionStatus() {
     return botProtectionEnabled;
 }
@@ -242,6 +369,12 @@ function setBotProtectionEnabled(enabled) {
     return botProtectionEnabled;
 }
 
+// ---------------------------------------------------------------------
+// Bloqueio de bots / crawlers de IA. Nenhuma lista de user-agent é
+// infalível (um cliente automatizado pode sempre forjar um cabeçalho),
+// mas combinamos assinatura de user-agent conhecida + ausência de
+// cabeçalhos que praticamente todo navegador real envia.
+// ---------------------------------------------------------------------
 function looksLikeRealBrowser(userAgent) {
     const normalizedUserAgent = String(userAgent || '').toLowerCase();
     if (!normalizedUserAgent) {
@@ -254,7 +387,9 @@ function looksLikeRealBrowser(userAgent) {
         'facebookexternalhit', 'twitterbot', 'linkedinbot', 'archive.org_bot', 'semrush', 'ahrefs', 'mj12bot',
         'curl/', 'wget', 'python-requests', 'headlesschrome', 'playwright', 'phantomjs', 'axios', 'httpie',
         'go-http-client', 'okhttp', 'postmanruntime', 'java/', 'libwww', 'python-urllib', 'wget/', 'python-urllib3',
-        'claudebot', 'anthropic-ai', 'openai-api', 'gpt4', 'gpt-4', 'chatgpt', 'o3-mini', 'o1-preview'
+        'anthropic-ai', 'openai-api', 'gpt4', 'gpt-4', 'chatgpt', 'o3-mini', 'o1-preview',
+        'ccbot', 'diffbot', 'bytespider', 'amazonbot', 'facebookbot', 'meta-externalagent', 'ai2bot',
+        'omgili', 'timpibot', 'youbot', 'webzio', 'scrapy', 'node-fetch', 'ruby', 'php', 'lwp::simple'
     ];
 
     if (botIndicators.some(indicator => normalizedUserAgent.includes(indicator))) {
@@ -276,8 +411,17 @@ function shouldBlockAutomatedRequest(req) {
         return false;
     }
 
-    const userAgent = (req && req.headers && (req.headers['user-agent'] || req.headers['User-Agent'] || '')) || '';
-    const blocked = !looksLikeRealBrowser(userAgent);
+    const headers = (req && req.headers) || {};
+    const userAgent = headers['user-agent'] || headers['User-Agent'] || '';
+    const acceptLanguage = headers['accept-language'];
+
+    let blocked = !looksLikeRealBrowser(userAgent);
+
+    // Navegadores reais praticamente sempre enviam Accept-Language;
+    // a maioria dos clientes automatizados (scripts, SDKs de IA) não envia.
+    if (!blocked && !acceptLanguage) {
+        blocked = true;
+    }
 
     if (blocked) {
         recordAuditEvent('system', 'Proteção bloqueada', `Bloqueado automaticamente por user-agent: ${userAgent || 'desconhecido'}`);
@@ -286,17 +430,48 @@ function shouldBlockAutomatedRequest(req) {
     return blocked;
 }
 
+function readJsonBody(req) {
+    return new Promise((resolve, reject) => {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                resolve(body ? JSON.parse(body) : {});
+            } catch (error) {
+                reject(error);
+            }
+        });
+        req.on('error', reject);
+    });
+}
+
 const server = http.createServer((req, res) => {
-    // Decodes URL components (e.g. spaces as %20)
     let decodedUrl;
     try {
         decodedUrl = decodeURIComponent(req.url);
     } catch (e) {
         decodedUrl = req.url;
     }
-    
-    // Strip query parameters
+
     const pathname = decodedUrl.split('?')[0];
+
+    // robots.txt fica sempre acessível (é o próprio mecanismo padrão para
+    // instruir crawlers/IAs bem-comportados a não indexar o site).
+    if (pathname === '/robots.txt') {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('User-agent: *\nDisallow: /\n');
+        return;
+    }
+
+    // A partir daqui, qualquer requisição que pareça vir de bot/IA é
+    // bloqueada antes de tocar em qualquer rota, inclusive a de
+    // ligar/desligar a própria proteção - assim um bot não consegue
+    // se auto-liberar.
+    if (shouldBlockAutomatedRequest(req)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Access denied for automated systems.');
+        return;
+    }
 
     if (pathname === '/api/bot-protection') {
         if (req.method === 'GET') {
@@ -306,29 +481,89 @@ const server = http.createServer((req, res) => {
         }
 
         if (req.method === 'POST') {
-            let body = '';
-            req.on('data', chunk => {
-                body += chunk;
-            });
-            req.on('end', () => {
-                try {
-                    const parsed = JSON.parse(body);
-                    const enabled = typeof parsed?.enabled === 'boolean' ? parsed.enabled : Boolean(parsed?.enabled);
-                    setBotProtectionEnabled(enabled);
-                    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-                    res.end(JSON.stringify({ enabled: botProtectionEnabled }));
-                } catch (error) {
-                    res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-                    res.end(JSON.stringify({ error: 'Payload inválido.' }));
-                }
+            readJsonBody(req).then(parsed => {
+                const enabled = typeof parsed?.enabled === 'boolean' ? parsed.enabled : Boolean(parsed?.enabled);
+                setBotProtectionEnabled(enabled);
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ enabled: botProtectionEnabled }));
+            }).catch(() => {
+                res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ error: 'Payload inválido.' }));
             });
             return;
         }
     }
 
-    if (shouldBlockAutomatedRequest(req)) {
-        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Access denied for automated systems.');
+    if (pathname === '/api/registrations/delete' && req.method === 'POST') {
+        readJsonBody(req).then(parsed => {
+            if (!parsed || !parsed.id) {
+                res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ error: 'id é obrigatório.' }));
+                return;
+            }
+            const payload = removeRegistrationById(parsed.id, parsed.actingUser);
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify(payload));
+        }).catch(() => {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: 'Payload inválido.' }));
+        });
+        return;
+    }
+
+    if (pathname === '/api/registrations/clear-all' && req.method === 'POST') {
+        readJsonBody(req).then(parsed => {
+            if (!isAdminUser(parsed?.actingUser)) {
+                res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ error: 'Acesso administrativo necessário.' }));
+                return;
+            }
+            const payload = clearAllData(parsed?.actingUser);
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify(payload));
+        }).catch(() => {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: 'Payload inválido.' }));
+        });
+        return;
+    }
+
+    if (pathname === '/api/users/remove' && req.method === 'POST') {
+        readJsonBody(req).then(parsed => {
+            if (!isAdminUser(parsed?.actingUser)) {
+                res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ error: 'Acesso administrativo necessário.' }));
+                return;
+            }
+            if (!parsed?.username) {
+                res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ error: 'username é obrigatório.' }));
+                return;
+            }
+            const payload = removeUserByUsername(parsed.username, parsed.actingUser);
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify(payload));
+        }).catch(() => {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: 'Payload inválido.' }));
+        });
+        return;
+    }
+
+    if (pathname === '/api/audit-log/clear' && req.method === 'POST') {
+        readJsonBody(req).then(parsed => {
+            if (!isAdminUser(parsed?.actingUser)) {
+                res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ error: 'Acesso administrativo necessário.' }));
+                return;
+            }
+            const payload = clearAuditLogData(parsed?.actingUser);
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify(payload));
+        }).catch(() => {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: 'Payload inválido.' }));
+        });
         return;
     }
 
@@ -341,23 +576,14 @@ const server = http.createServer((req, res) => {
         }
 
         if (req.method === 'POST') {
-            let body = '';
-            req.on('data', chunk => {
-                body += chunk;
-            });
-            req.on('end', () => {
-                let parsed = { registrations: [], users: [] };
-                try {
-                    parsed = JSON.parse(body);
-                } catch (error) {
-                    res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-                    res.end(JSON.stringify({ error: 'Payload inválido.' }));
-                    return;
-                }
-
+            readJsonBody(req).then(parsed => {
                 if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                    const persistedPayload = buildPersistedPayload(parsed);
-                    writeRegistrationsFile(parsed);
+                    // BUG CORRIGIDO: antes a resposta era calculada com
+                    // buildPersistedPayload(parsed) SEM o payload anterior,
+                    // então o JSON devolvido ao cliente não batia com o que
+                    // realmente foi persistido. Agora usamos o retorno real
+                    // de writeRegistrationsFile.
+                    const persistedPayload = writeRegistrationsFile(parsed);
                     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
                     res.end(JSON.stringify(persistedPayload));
                     return;
@@ -365,14 +591,16 @@ const server = http.createServer((req, res) => {
 
                 res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
                 res.end(JSON.stringify({ error: 'Esperava um objeto com registrations e users.' }));
+            }).catch(() => {
+                res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ error: 'Payload inválido.' }));
             });
             return;
         }
     }
 
     let filePath = path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname);
-    
-    // Security check to avoid accessing files outside the workspace
+
     if (!filePath.startsWith(PUBLIC_DIR)) {
         res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('Forbidden - Access Denied');
