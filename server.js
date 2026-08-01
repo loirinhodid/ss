@@ -196,9 +196,10 @@ function looksLikeRealBrowser(userAgent) {
 
     const botIndicators = [
         'bot', 'crawler', 'spider', 'slurp', 'bingbot', 'googlebot', 'applebot', 'duckduckbot', 'baiduspider',
-        'yandex', 'petalbot', 'gptbot', 'claudebot', 'openai', 'facebookexternalhit', 'twitterbot', 'linkedinbot',
+        'yandex', 'petalbot', 'gptbot', 'claudebot', 'openai', 'anthropic', 'claude', 'perplexity', 'cohere',
+        'facebookexternalhit', 'twitterbot', 'linkedinbot', 'archive.org_bot', 'semrush', 'ahrefs', 'mj12bot',
         'curl/', 'wget', 'python-requests', 'headlesschrome', 'playwright', 'phantomjs', 'axios', 'httpie',
-        'go-http-client', 'okhttp', 'postmanruntime', 'java/', 'libwww', 'python-urllib'
+        'go-http-client', 'okhttp', 'postmanruntime', 'java/', 'libwww', 'python-urllib', 'wget/', 'python-urllib3'
     ];
 
     if (botIndicators.some(indicator => normalizedUserAgent.includes(indicator))) {
