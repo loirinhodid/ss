@@ -80,3 +80,65 @@ test('allows toggling protection state on and off', () => {
   setBotProtectionEnabled(true);
   assert.equal(getBotProtectionStatus(), true);
 });
+
+test('blocks page and dashboard requests that do not look like a real browser', () => {
+  setBotProtectionEnabled(true);
+  const blocked = shouldBlockAutomatedRequest({
+    headers: {
+      'user-agent': 'python-requests/2.31.0',
+      accept: 'text/html,application/xhtml+xml'
+    }
+  });
+
+  assert.equal(blocked, true);
+});
+
+test('records protection events in the audit log', () => {
+  const initialPayload = {
+    registrations: [],
+    users: [{ username: 'admin', role: 'admin', password: 'hash' }],
+    auditLog: [],
+    sessionState: {
+      dashboardUnlocked: false,
+      currentUser: '',
+      lastParticipationChoice: 'yes',
+      lastUpdated: '2026-03-05T00:00:00.000Z'
+    }
+  };
+
+  writeRegistrationsFile(initialPayload);
+  setBotProtectionEnabled(true);
+  shouldBlockAutomatedRequest({ headers: { 'user-agent': 'Mozilla/5.0 (compatible; GPTBot/1.1)' } });
+
+  const result = readRegistrationsFile();
+  const latestEvent = result.auditLog[0];
+
+  assert.ok(latestEvent, 'Deveria registrar um evento de proteção');
+  assert.equal(latestEvent.action, 'Proteção bloqueada');
+});
+
+test('preserves existing registrations when a partial payload is written', () => {
+  const initialPayload = {
+    registrations: [{ name: 'Carla', email: 'carla@example.com', participate: 'yes', date: '2026-03-03T00:00:00.000Z' }],
+    users: [{ username: 'admin', role: 'admin', password: 'hash' }],
+    auditLog: [],
+    sessionState: {
+      dashboardUnlocked: false,
+      currentUser: '',
+      lastParticipationChoice: 'yes',
+      lastUpdated: '2026-03-03T00:00:00.000Z'
+    }
+  };
+
+  writeRegistrationsFile(initialPayload);
+
+  const partialPayload = {
+    users: [{ username: 'admin', role: 'admin', password: 'hash' }],
+    auditLog: [{ user: 'system', action: 'Sync', details: 'Partial write', date: '2026-03-04T00:00:00.000Z' }]
+  };
+
+  const result = writeRegistrationsFile(partialPayload);
+
+  assert.deepEqual(result.registrations, initialPayload.registrations);
+  assert.deepEqual(result.auditLog, partialPayload.auditLog);
+});

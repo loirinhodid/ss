@@ -34,20 +34,22 @@ function normalizeSessionState() {
     return createDefaultSessionState();
 }
 
-function buildPersistedPayload(data) {
+function buildPersistedPayload(data, previousPayload = null) {
     const source = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
-    const registrations = Array.isArray(source.registrations)
-        ? source.registrations
-        : Array.isArray(data) ? data : [];
-    const users = Array.isArray(source.users) ? source.users : [];
-    const auditLog = Array.isArray(source.auditLog) ? source.auditLog : [];
-    const sessionState = {
-        dashboardUnlocked: false,
-        currentUser: '',
-        lastParticipationChoice: 'yes',
-        lastUpdated: typeof source.sessionState?.lastUpdated === 'string' ? source.sessionState.lastUpdated : new Date().toISOString()
-    };
+    const previous = previousPayload && typeof previousPayload === 'object' && !Array.isArray(previousPayload) ? previousPayload : {};
 
+    const hasRegistrationsField = Object.prototype.hasOwnProperty.call(source, 'registrations');
+    const registrations = hasRegistrationsField
+        ? (Array.isArray(source.registrations) ? source.registrations : Array.isArray(data) ? data : [])
+        : (Array.isArray(previous.registrations) ? previous.registrations : []);
+
+    const hasUsersField = Object.prototype.hasOwnProperty.call(source, 'users');
+    const users = hasUsersField ? (Array.isArray(source.users) ? source.users : []) : (Array.isArray(previous.users) ? previous.users : []);
+
+    const hasAuditLogField = Object.prototype.hasOwnProperty.call(source, 'auditLog');
+    const auditLog = hasAuditLogField ? (Array.isArray(source.auditLog) ? source.auditLog : []) : (Array.isArray(previous.auditLog) ? previous.auditLog : []);
+
+    const sessionState = createDefaultSessionState();
     const payload = {
         registrations,
         users,
@@ -120,7 +122,7 @@ function loadPayloadFromDatabase() {
 function readRegistrationsFile() {
     const persistedFromDatabase = loadPayloadFromDatabase();
     if (persistedFromDatabase) {
-        return buildPersistedPayload(persistedFromDatabase);
+        return buildPersistedPayload(persistedFromDatabase, persistedFromDatabase);
     }
 
     try {
@@ -148,7 +150,29 @@ function readRegistrationsFile() {
 }
 
 function writeRegistrationsFile(data) {
-    const payload = buildPersistedPayload(data);
+    const previousPayload = readRegistrationsFile();
+    const payload = buildPersistedPayload(data, previousPayload);
+    persistPayloadToDatabase(payload);
+    fs.writeFileSync(DATA_FILE, JSON.stringify(payload, null, 2), 'utf8');
+    return payload;
+}
+
+function recordAuditEvent(user, action, details) {
+    const previousPayload = readRegistrationsFile();
+    const nextAuditLog = [{
+        user,
+        action,
+        details,
+        date: new Date().toISOString()
+    }].concat(Array.isArray(previousPayload.auditLog) ? previousPayload.auditLog : []);
+
+    const payload = buildPersistedPayload({
+        registrations: previousPayload.registrations,
+        users: previousPayload.users,
+        auditLog: nextAuditLog,
+        sessionState: previousPayload.sessionState
+    }, previousPayload);
+
     persistPayloadToDatabase(payload);
     fs.writeFileSync(DATA_FILE, JSON.stringify(payload, null, 2), 'utf8');
     return payload;
@@ -160,7 +184,29 @@ function getBotProtectionStatus() {
 
 function setBotProtectionEnabled(enabled) {
     botProtectionEnabled = Boolean(enabled);
+    recordAuditEvent('system', 'Proteção', botProtectionEnabled ? 'Proteção contra bots ativada.' : 'Proteção contra bots desativada.');
     return botProtectionEnabled;
+}
+
+function looksLikeRealBrowser(userAgent) {
+    const normalizedUserAgent = String(userAgent || '').toLowerCase();
+    if (!normalizedUserAgent) {
+        return false;
+    }
+
+    const botIndicators = [
+        'bot', 'crawler', 'spider', 'slurp', 'bingbot', 'googlebot', 'applebot', 'duckduckbot', 'baiduspider',
+        'yandex', 'petalbot', 'gptbot', 'claudebot', 'openai', 'facebookexternalhit', 'twitterbot', 'linkedinbot',
+        'curl/', 'wget', 'python-requests', 'headlesschrome', 'playwright', 'phantomjs', 'axios', 'httpie',
+        'go-http-client', 'okhttp', 'postmanruntime', 'java/', 'libwww', 'python-urllib'
+    ];
+
+    if (botIndicators.some(indicator => normalizedUserAgent.includes(indicator))) {
+        return false;
+    }
+
+    const browserIndicators = ['mozilla', 'chrome', 'firefox', 'safari', 'edg/', 'edge/', 'opera', 'chromium', 'webkit'];
+    return browserIndicators.some(indicator => normalizedUserAgent.includes(indicator));
 }
 
 function shouldBlockAutomatedRequest(req) {
@@ -169,14 +215,13 @@ function shouldBlockAutomatedRequest(req) {
     }
 
     const userAgent = (req && req.headers && (req.headers['user-agent'] || req.headers['User-Agent'] || '')) || '';
-    const normalizedUserAgent = String(userAgent).toLowerCase();
-    const botIndicators = [
-        'bot', 'crawler', 'spider', 'slurp', 'bingbot', 'googlebot', 'applebot', 'duckduckbot', 'baiduspider',
-        'yandex', 'petalbot', 'gptbot', 'claudebot', 'openai', 'facebookexternalhit', 'twitterbot', 'linkedinbot',
-        'curl/', 'wget', 'python-requests', 'headlesschrome', 'playwright', 'phantomjs'
-    ];
+    const blocked = !looksLikeRealBrowser(userAgent);
 
-    return botIndicators.some(indicator => normalizedUserAgent.includes(indicator));
+    if (blocked) {
+        recordAuditEvent('system', 'Proteção bloqueada', `Bloqueado automaticamente por user-agent: ${userAgent || 'desconhecido'}`);
+    }
+
+    return blocked;
 }
 
 const server = http.createServer((req, res) => {
