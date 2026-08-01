@@ -75,6 +75,7 @@ async function initApp() {
     await loadRegistrations();
 
     setupEventListeners();
+    await refreshBotProtectionStatus();
     checkLockedState();
 
     window.addEventListener('focus', () => syncSharedStateFromBackend());
@@ -277,6 +278,7 @@ function setupEventListeners() {
     // Lock Dashboard Action
     document.getElementById('btn-lock-db').addEventListener('click', lockDashboard);
     document.getElementById('btn-clear-all').addEventListener('click', clearAllRegistrations);
+    document.getElementById('btn-toggle-bot-protection').addEventListener('click', toggleBotProtection);
     document.getElementById('admin-user-form').addEventListener('submit', handleAdminCreateUser);
     document.getElementById('password-change-form').addEventListener('submit', handlePasswordChange);
     document.getElementById('btn-clear-audit-log').addEventListener('click', clearAuditLog);
@@ -335,6 +337,56 @@ function applySessionStateToUi() {
 
 function checkLockedState() {
     applySessionStateToUi();
+}
+
+async function refreshBotProtectionStatus() {
+    try {
+        const response = await fetch('/api/bot-protection');
+        if (!response.ok) return;
+
+        const data = await response.json();
+        updateBotProtectionUi(Boolean(data?.enabled));
+    } catch (error) {
+        console.warn('Não foi possível obter o estado da proteção contra bots.', error);
+    }
+}
+
+async function toggleBotProtection() {
+    const button = document.getElementById('btn-toggle-bot-protection');
+    const label = document.getElementById('bot-protection-label');
+    const status = document.getElementById('bot-protection-status');
+
+    if (!button || !label || !status) return;
+
+    const nextEnabled = label.textContent?.includes('Ativar') ?? false;
+
+    try {
+        const response = await fetch('/api/bot-protection', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: nextEnabled })
+        });
+
+        if (!response.ok) throw new Error('Falha ao atualizar a proteção');
+        const data = await response.json();
+        updateBotProtectionUi(Boolean(data?.enabled));
+        showToast(nextEnabled ? 'Proteção contra bots ativada.' : 'Proteção contra bots desativada.', 'success');
+    } catch (error) {
+        console.warn('Não foi possível alterar a proteção contra bots.', error);
+        showToast('Não foi possível alterar a proteção.', 'error');
+    }
+}
+
+function updateBotProtectionUi(enabled) {
+    const button = document.getElementById('btn-toggle-bot-protection');
+    const label = document.getElementById('bot-protection-label');
+    const status = document.getElementById('bot-protection-status');
+
+    if (button && label && status) {
+        label.textContent = enabled ? 'Desativar proteção' : 'Ativar proteção';
+        button.setAttribute('aria-pressed', String(enabled));
+        status.textContent = `Proteção contra bots: ${enabled ? 'ativa' : 'desativada'}`;
+    }
 }
 
 function unlockDashboard(message) {

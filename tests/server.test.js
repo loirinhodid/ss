@@ -7,7 +7,7 @@ const { DatabaseSync } = require('node:sqlite');
 const tempDataFile = path.join(os.tmpdir(), `ss-shared-state-${Date.now()}.json`);
 process.env.DATA_FILE = tempDataFile;
 
-const { writeRegistrationsFile, readRegistrationsFile } = require('../server.js');
+const { writeRegistrationsFile, readRegistrationsFile, shouldBlockAutomatedRequest, getBotProtectionStatus, setBotProtectionEnabled } = require('../server.js');
 
 test('persists shared registration data while sanitizing sensitive session state', () => {
   const payload = {
@@ -60,4 +60,23 @@ test('stores the latest state in a SQLite database so edits and deletions persis
   assert.deepEqual(result.registrations, updatedPayload.registrations);
   assert.deepEqual(result.auditLog, updatedPayload.auditLog);
   assert.equal(result.sessionState.lastParticipationChoice, 'yes');
+});
+
+test('blocks obvious bot and automation requests when protection is enabled', () => {
+  setBotProtectionEnabled(true);
+  const blocked = shouldBlockAutomatedRequest({
+    headers: {
+      'user-agent': 'Mozilla/5.0 (compatible; GPTBot/1.1; +https://openai.com/gptbot)'
+    }
+  });
+
+  assert.equal(blocked, true);
+});
+
+test('allows toggling protection state on and off', () => {
+  setBotProtectionEnabled(false);
+  assert.equal(getBotProtectionStatus(), false);
+
+  setBotProtectionEnabled(true);
+  assert.equal(getBotProtectionStatus(), true);
 });

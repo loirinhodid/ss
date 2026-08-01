@@ -8,6 +8,7 @@ const PORT = process.env.PORT || 8000;
 const PUBLIC_DIR = path.resolve(__dirname);
 const DATA_FILE = process.env.DATA_FILE || path.join(PUBLIC_DIR, 'data.json');
 let sqliteConnection = null;
+let botProtectionEnabled = true;
 
 const MIME_TYPES = {
     '.html': 'text/html',
@@ -153,6 +154,31 @@ function writeRegistrationsFile(data) {
     return payload;
 }
 
+function getBotProtectionStatus() {
+    return botProtectionEnabled;
+}
+
+function setBotProtectionEnabled(enabled) {
+    botProtectionEnabled = Boolean(enabled);
+    return botProtectionEnabled;
+}
+
+function shouldBlockAutomatedRequest(req) {
+    if (!botProtectionEnabled) {
+        return false;
+    }
+
+    const userAgent = (req && req.headers && (req.headers['user-agent'] || req.headers['User-Agent'] || '')) || '';
+    const normalizedUserAgent = String(userAgent).toLowerCase();
+    const botIndicators = [
+        'bot', 'crawler', 'spider', 'slurp', 'bingbot', 'googlebot', 'applebot', 'duckduckbot', 'baiduspider',
+        'yandex', 'petalbot', 'gptbot', 'claudebot', 'openai', 'facebookexternalhit', 'twitterbot', 'linkedinbot',
+        'curl/', 'wget', 'python-requests', 'headlesschrome', 'playwright', 'phantomjs'
+    ];
+
+    return botIndicators.some(indicator => normalizedUserAgent.includes(indicator));
+}
+
 const server = http.createServer((req, res) => {
     // Decodes URL components (e.g. spaces as %20)
     let decodedUrl;
@@ -164,6 +190,40 @@ const server = http.createServer((req, res) => {
     
     // Strip query parameters
     const pathname = decodedUrl.split('?')[0];
+
+    if (pathname === '/api/bot-protection') {
+        if (req.method === 'GET') {
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ enabled: botProtectionEnabled }));
+            return;
+        }
+
+        if (req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => {
+                body += chunk;
+            });
+            req.on('end', () => {
+                try {
+                    const parsed = JSON.parse(body);
+                    const enabled = typeof parsed?.enabled === 'boolean' ? parsed.enabled : Boolean(parsed?.enabled);
+                    setBotProtectionEnabled(enabled);
+                    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({ enabled: botProtectionEnabled }));
+                } catch (error) {
+                    res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({ error: 'Payload inválido.' }));
+                }
+            });
+            return;
+        }
+    }
+
+    if (shouldBlockAutomatedRequest(req)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Access denied for automated systems.');
+        return;
+    }
 
     if (pathname === '/api/registrations') {
         if (req.method === 'GET') {
@@ -242,5 +302,8 @@ module.exports = {
     normalizeSessionState,
     readRegistrationsFile,
     writeRegistrationsFile,
+    shouldBlockAutomatedRequest,
+    getBotProtectionStatus,
+    setBotProtectionEnabled,
     server
 };
