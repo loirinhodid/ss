@@ -93,23 +93,13 @@ async function initApp() {
     showTab('signup-tab');
 }
 
-function getStoredSessionState() {
-    const storedSessionState = localStorage.getItem('beta_portal_session_state');
-    if (!storedSessionState) return null;
-
-    try {
-        const parsedSessionState = JSON.parse(storedSessionState);
-        return {
-            dashboardUnlocked: false,
-            currentUser: '',
-            lastParticipationChoice: parsedSessionState.lastParticipationChoice === 'no' ? 'no' : 'yes',
-            lastUpdated: typeof parsedSessionState.lastUpdated === 'string' ? parsedSessionState.lastUpdated : new Date().toISOString()
-        };
-    } catch (error) {
-        return null;
-    }
-}
-
+// BUG CORRIGIDO: esta função sempre devolvia dashboardUnlocked: false e
+// currentUser: '', não importa o que estivesse salvo. Como
+// applySharedDataFromBackend era chamada logo depois de todo unlock bem
+// sucedido (via persistRegistrations), o desbloqueio era desfeito na
+// hora e a tela voltava a pedir senha em loop. Agora preservamos o
+// estado de desbloqueio que já está na memória da própria aba, em vez
+// de reconstruir do zero a partir do localStorage.
 function applySharedDataFromBackend(data, { preserveLocalSession = true } = {}) {
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
         return;
@@ -123,13 +113,16 @@ function applySharedDataFromBackend(data, { preserveLocalSession = true } = {}) 
         auditLog = data.auditLog;
     }
 
-    const savedSessionState = preserveLocalSession ? getStoredSessionState() : null;
-    sessionState = savedSessionState ? {
-        dashboardUnlocked: false,
-        currentUser: '',
-        lastParticipationChoice: savedSessionState.lastParticipationChoice === 'no' ? 'no' : 'yes',
-        lastUpdated: typeof savedSessionState.lastUpdated === 'string' ? savedSessionState.lastUpdated : new Date().toISOString()
-    } : createDefaultSessionState();
+    if (preserveLocalSession) {
+        const incomingSessionState = data.sessionState && typeof data.sessionState === 'object' ? data.sessionState : {};
+        sessionState = {
+            ...sessionState,
+            lastParticipationChoice: incomingSessionState.lastParticipationChoice === 'no' ? 'no' : sessionState.lastParticipationChoice,
+            lastUpdated: new Date().toISOString()
+        };
+    } else {
+        sessionState = createDefaultSessionState();
+    }
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(registrations));
     localStorage.setItem('beta_portal_users', JSON.stringify(users));

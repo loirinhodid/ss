@@ -430,6 +430,31 @@ function shouldBlockAutomatedRequest(req) {
     return blocked;
 }
 
+// ---------------------------------------------------------------------
+// Barreira de execução de JavaScript. Ferramentas simples de leitura de
+// conteúdo (fetchers de texto, a maioria dos crawlers/SDKs de IA) pedem
+// a página e leem o HTML estático, sem executar JavaScript. Um navegador
+// de verdade executa o script abaixo, grava um cookie e recarrega -
+// só então o conteúdo real é servido. Isso não é uma garantia absoluta
+// (um agente que realmente renderiza a página como um navegador ainda
+// passaria), mas barra a grande maioria dos fetchers automatizados.
+// ---------------------------------------------------------------------
+const JS_CHALLENGE_HTML = `<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8"><title>Verificando acesso...</title></head>
+<body style="font-family:sans-serif;background:#0f1126;color:#f3f4f6;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+<p>Verificando seu navegador…</p>
+<script>
+  document.cookie = "bp_js_ok=1; path=/; max-age=86400; samesite=lax";
+  location.reload();
+</script>
+<noscript><p>É necessário habilitar JavaScript para acessar este site.</p></noscript>
+</body></html>`;
+
+function hasJsChallengeCookie(req) {
+    const cookieHeader = (req.headers && req.headers.cookie) || '';
+    return /(?:^|;\s*)bp_js_ok=1(?:;|$)/.test(cookieHeader);
+}
+
 function readJsonBody(req) {
     return new Promise((resolve, reject) => {
         let body = '';
@@ -460,6 +485,15 @@ const server = http.createServer((req, res) => {
     if (pathname === '/robots.txt') {
         res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('User-agent: *\nDisallow: /\n');
+        return;
+    }
+
+    // Exige que o cliente execute JavaScript antes de ver qualquer
+    // conteúdo real (página, JSON de API etc). Fetchers de texto simples
+    // nunca conseguem passar daqui.
+    if (!hasJsChallengeCookie(req)) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(JS_CHALLENGE_HTML);
         return;
     }
 
