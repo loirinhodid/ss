@@ -46,7 +46,7 @@
     }
 
     const hashedInput = await hashTextSha256(normalizedInput);
-    return normalizedStored === hashedInput || normalizedStored === normalizedInput;
+    return normalizedStored === hashedInput;
   }
 
   return {

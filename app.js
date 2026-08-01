@@ -4,22 +4,24 @@ const SESSION_UNLOCK_KEY = 'dashboard_unlocked';
 const CURRENT_USER_KEY = 'dashboard_current_user';
 const PARTICIPATION_CHOICE_KEY = 'beta_portal_last_choice';
 const API_ENDPOINT = '/api/registrations';
-const CORRECT_HASH = 'c8bf231d991a832c793f8b518ae7a49d4e807ac1ab183c2a01bc659c01d0b774'; // SHA-256 of "aniimo"
 const DEFAULT_ADMIN_USERNAME = 'admin';
-const DEFAULT_ADMIN_PASSWORD = 'aniimo';
 
 const authUtils = typeof window !== 'undefined' && window.AuthUtils ? window.AuthUtils : null;
 
 let registrations = [];
 let users = [];
 let auditLog = [];
-let sessionState = {
-    dashboardUnlocked: false,
-    currentUser: '',
-    lastParticipationChoice: 'yes',
-    lastUpdated: new Date().toISOString()
-};
+let sessionState = createDefaultSessionState();
 let chartInstance = null;
+
+function createDefaultSessionState() {
+    return {
+        dashboardUnlocked: false,
+        currentUser: '',
+        lastParticipationChoice: 'yes',
+        lastUpdated: new Date().toISOString()
+    };
+}
 
 class UserAccount {
     constructor(username, password, role = 'user') {
@@ -94,8 +96,8 @@ function getStoredSessionState() {
     try {
         const parsedSessionState = JSON.parse(storedSessionState);
         return {
-            dashboardUnlocked: Boolean(parsedSessionState.dashboardUnlocked),
-            currentUser: typeof parsedSessionState.currentUser === 'string' ? parsedSessionState.currentUser : '',
+            dashboardUnlocked: false,
+            currentUser: '',
             lastParticipationChoice: parsedSessionState.lastParticipationChoice === 'no' ? 'no' : 'yes',
             lastUpdated: typeof parsedSessionState.lastUpdated === 'string' ? parsedSessionState.lastUpdated : new Date().toISOString()
         };
@@ -119,16 +121,11 @@ function applySharedDataFromBackend(data, { preserveLocalSession = true } = {}) 
 
     const savedSessionState = preserveLocalSession ? getStoredSessionState() : null;
     sessionState = savedSessionState ? {
-        dashboardUnlocked: Boolean(savedSessionState.dashboardUnlocked),
-        currentUser: typeof savedSessionState.currentUser === 'string' ? savedSessionState.currentUser : '',
-        lastParticipationChoice: savedSessionState.lastParticipationChoice === 'no' ? 'no' : 'yes',
-        lastUpdated: typeof savedSessionState.lastUpdated === 'string' ? savedSessionState.lastUpdated : new Date().toISOString()
-    } : {
         dashboardUnlocked: false,
         currentUser: '',
-        lastParticipationChoice: 'yes',
-        lastUpdated: new Date().toISOString()
-    };
+        lastParticipationChoice: savedSessionState.lastParticipationChoice === 'no' ? 'no' : 'yes',
+        lastUpdated: typeof savedSessionState.lastUpdated === 'string' ? savedSessionState.lastUpdated : new Date().toISOString()
+    } : createDefaultSessionState();
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(registrations));
     localStorage.setItem('beta_portal_users', JSON.stringify(users));
@@ -152,12 +149,7 @@ async function loadRegistrations() {
                 registrations = data;
                 users = [];
                 auditLog = [];
-                sessionState = {
-                    dashboardUnlocked: false,
-                    currentUser: '',
-                    lastParticipationChoice: 'yes',
-                    lastUpdated: new Date().toISOString()
-                };
+                sessionState = createDefaultSessionState();
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(registrations));
                 localStorage.setItem('beta_portal_users', JSON.stringify(users));
                 localStorage.setItem('beta_portal_audit_log', JSON.stringify(auditLog));
@@ -213,18 +205,13 @@ async function loadRegistrations() {
         try {
             const parsedSessionState = JSON.parse(storedSessionState);
             sessionState = {
-                dashboardUnlocked: Boolean(parsedSessionState.dashboardUnlocked),
-                currentUser: typeof parsedSessionState.currentUser === 'string' ? parsedSessionState.currentUser : '',
+                dashboardUnlocked: false,
+                currentUser: '',
                 lastParticipationChoice: parsedSessionState.lastParticipationChoice === 'no' ? 'no' : 'yes',
                 lastUpdated: typeof parsedSessionState.lastUpdated === 'string' ? parsedSessionState.lastUpdated : new Date().toISOString()
             };
         } catch (error) {
-            sessionState = {
-                dashboardUnlocked: false,
-                currentUser: '',
-                lastParticipationChoice: 'yes',
-                lastUpdated: new Date().toISOString()
-            };
+            sessionState = createDefaultSessionState();
         }
     }
 
@@ -236,13 +223,10 @@ function ensureDefaultAdminUser() {
     const existingAdmin = users.find(user => user.username.toLowerCase() === DEFAULT_ADMIN_USERNAME);
     if (existingAdmin) {
         existingAdmin.role = 'admin';
-        if (!existingAdmin.password) {
-            existingAdmin.password = DEFAULT_ADMIN_PASSWORD;
-        }
         return;
     }
 
-    users.unshift(new UserAccount(DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD, 'admin'));
+    users.unshift(new UserAccount(DEFAULT_ADMIN_USERNAME, '', 'admin'));
     localStorage.setItem('beta_portal_users', JSON.stringify(users));
 }
 
@@ -314,8 +298,7 @@ function showTab(tabId) {
         document.getElementById('signup-view').classList.remove('active');
         
         // If unlocked, render dashboard components
-        const isUnlocked = sessionStorage.getItem(SESSION_UNLOCK_KEY) === 'true';
-        if (isUnlocked) {
+        if (sessionState.dashboardUnlocked) {
             renderDashboard();
         }
     }
@@ -673,14 +656,31 @@ async function handleUnlockAttempt(e) {
 
         if (isAdmin) {
             const adminUser = existingUser || users.find(user => user.username.toLowerCase() === DEFAULT_ADMIN_USERNAME);
-            const validAdmin = adminUser && await verifyPassword(password, adminUser.password || DEFAULT_ADMIN_PASSWORD);
+            if (!adminUser) {
+                setTimeout(() => formEl.classList.add('error-shake'), 10);
+                errorMsg.style.display = 'block';
+                passInput.value = '';
+                showToast('Usuário administrador não encontrado.', 'error');
+                return;
+            }
+
+            if (!adminUser.password) {
+                adminUser.password = await hashPassword(password);
+                adminUser.lastLogin = new Date().toISOString();
+                setCurrentUserName(adminUser.username);
+                addAuditLog('admin', 'Senha criada', 'Administrador criou a senha inicial');
+                await persistRegistrations();
+                userInput.value = '';
+                passInput.value = '';
+                errorMsg.style.display = 'none';
+                passwordLabel.textContent = 'Senha';
+                loginHelp.textContent = 'Apenas usuários pré-cadastrados pelo administrador podem criar ou usar senha nesta tela.';
+                unlockDashboard('Senha criada com sucesso!');
+                return;
+            }
+
+            const validAdmin = await verifyPassword(password, adminUser.password);
             if (validAdmin) {
-                if (adminUser.password && !looksLikeSha256Hash(adminUser.password) && adminUser.password !== DEFAULT_ADMIN_PASSWORD) {
-                    adminUser.password = DEFAULT_ADMIN_PASSWORD;
-                }
-                if (!adminUser.password || adminUser.password === DEFAULT_ADMIN_PASSWORD) {
-                    adminUser.password = await hashPassword(DEFAULT_ADMIN_PASSWORD);
-                }
                 adminUser.lastLogin = new Date().toISOString();
                 setCurrentUserName(adminUser.username);
                 addAuditLog('admin', 'Login', 'Admin acessou o painel');
@@ -946,12 +946,20 @@ async function deleteRegistration(index) {
 }
 
 async function clearAllRegistrations() {
-    const password = window.prompt('Digite a senha mestre para limpar tudo:');
+    const currentUserName = getCurrentUserName();
+    const currentAdmin = users.find(user => user.username.toLowerCase() === currentUserName.toLowerCase() && user.role === 'admin');
+
+    if (!currentAdmin) {
+        showToast('Acesso administrativo necessário para limpar tudo.', 'error');
+        return;
+    }
+
+    const password = window.prompt('Digite sua senha atual para confirmar a limpeza:');
     if (!password) return;
 
-    const hashed = await computeSHA256(password);
-    if (hashed !== CORRECT_HASH && password !== DEFAULT_ADMIN_PASSWORD) {
-        showToast('Senha mestre incorreta.', 'error');
+    const isValid = await verifyPassword(password, currentAdmin.password || '');
+    if (!isValid) {
+        showToast('Senha incorreta.', 'error');
         return;
     }
 
@@ -961,6 +969,7 @@ async function clearAllRegistrations() {
     registrations = [];
     users = [];
     auditLog = [];
+    ensureDefaultAdminUser();
     addAuditLog('admin', 'Limpeza', 'Todos os registros e usuários foram removidos');
     await persistRegistrations();
     renderDashboard();
