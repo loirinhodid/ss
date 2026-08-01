@@ -9,6 +9,7 @@ const PUBLIC_DIR = path.resolve(__dirname);
 const DATA_FILE = process.env.DATA_FILE || path.join(PUBLIC_DIR, 'data.json');
 let sqliteConnection = null;
 let botProtectionEnabled = true;
+let currentPersistedPayload = null;
 
 const MIME_TYPES = {
     '.html': 'text/html',
@@ -37,6 +38,7 @@ function normalizeSessionState() {
 function buildPersistedPayload(data, previousPayload = null) {
     const source = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
     const previous = previousPayload && typeof previousPayload === 'object' && !Array.isArray(previousPayload) ? previousPayload : {};
+    const previousSessionState = previous.sessionState && typeof previous.sessionState === 'object' ? previous.sessionState : {};
 
     const hasRegistrationsField = Object.prototype.hasOwnProperty.call(source, 'registrations');
     const registrations = hasRegistrationsField
@@ -49,7 +51,20 @@ function buildPersistedPayload(data, previousPayload = null) {
     const hasAuditLogField = Object.prototype.hasOwnProperty.call(source, 'auditLog');
     const auditLog = hasAuditLogField ? (Array.isArray(source.auditLog) ? source.auditLog : []) : (Array.isArray(previous.auditLog) ? previous.auditLog : []);
 
-    const sessionState = createDefaultSessionState();
+    const sessionState = {
+        dashboardUnlocked: false,
+        currentUser: '',
+        lastParticipationChoice: 'yes',
+        lastUpdated: new Date().toISOString()
+    };
+
+    if (previousSessionState && typeof previousSessionState === 'object') {
+        sessionState.dashboardUnlocked = false;
+        sessionState.currentUser = '';
+        sessionState.lastParticipationChoice = previousSessionState.lastParticipationChoice === 'no' ? 'no' : 'yes';
+        sessionState.lastUpdated = typeof previousSessionState.lastUpdated === 'string' ? previousSessionState.lastUpdated : new Date().toISOString();
+    }
+
     const payload = {
         registrations,
         users,
@@ -119,21 +134,56 @@ function loadPayloadFromDatabase() {
     }
 }
 
+function writePayloadToDisk(payload) {
+    const serializedPayload = JSON.stringify(payload, null, 2);
+    const backupPath = `${DATA_FILE}.bak`;
+
+    try {
+        if (fs.existsSync(DATA_FILE)) {
+            const currentContent = fs.readFileSync(DATA_FILE, 'utf8');
+            fs.writeFileSync(backupPath, currentContent, 'utf8');
+        }
+        fs.writeFileSync(DATA_FILE, serializedPayload, 'utf8');
+        currentPersistedPayload = payload;
+        return true;
+    } catch (error) {
+        console.warn('Não foi possível escrever o estado persistido:', error);
+        try {
+            if (fs.existsSync(backupPath)) {
+                fs.writeFileSync(DATA_FILE, fs.readFileSync(backupPath, 'utf8'), 'utf8');
+            }
+        } catch (restoreError) {
+            console.warn('Não foi possível restaurar o backup do estado persistido:', restoreError);
+        }
+        return false;
+    }
+}
+
 function readRegistrationsFile() {
-    const persistedFromDatabase = loadPayloadFromDatabase();
-    if (persistedFromDatabase) {
-        return buildPersistedPayload(persistedFromDatabase, persistedFromDatabase);
+    try {
+        const persistedFromDatabase = loadPayloadFromDatabase();
+        if (persistedFromDatabase) {
+            currentPersistedPayload = buildPersistedPayload(persistedFromDatabase, currentPersistedPayload || persistedFromDatabase);
+            return currentPersistedPayload;
+        }
+    } catch (error) {
+        console.warn('Não foi possível ler o banco SQLite:', error);
     }
 
     try {
         const content = fs.readFileSync(DATA_FILE, 'utf8');
         const parsed = JSON.parse(content);
-        const payload = buildPersistedPayload(parsed);
+        const payload = buildPersistedPayload(parsed, currentPersistedPayload || parsed);
+        currentPersistedPayload = payload;
         persistPayloadToDatabase(payload);
         return payload;
     } catch (error) {
         if (error.code !== 'ENOENT') {
             console.warn('Não foi possível ler data.json:', error);
+        }
+
+        if (currentPersistedPayload) {
+            return buildPersistedPayload(currentPersistedPayload, currentPersistedPayload);
         }
 
         const emptyPayload = {
@@ -143,8 +193,9 @@ function readRegistrationsFile() {
             sessionState: createDefaultSessionState()
         };
 
+        currentPersistedPayload = emptyPayload;
         persistPayloadToDatabase(emptyPayload);
-        fs.writeFileSync(DATA_FILE, JSON.stringify(emptyPayload, null, 2), 'utf8');
+        writePayloadToDisk(emptyPayload);
         return buildPersistedPayload(emptyPayload);
     }
 }
@@ -153,7 +204,10 @@ function writeRegistrationsFile(data) {
     const previousPayload = readRegistrationsFile();
     const payload = buildPersistedPayload(data, previousPayload);
     persistPayloadToDatabase(payload);
-    fs.writeFileSync(DATA_FILE, JSON.stringify(payload, null, 2), 'utf8');
+    const written = writePayloadToDisk(payload);
+    if (!written && currentPersistedPayload) {
+        return buildPersistedPayload(currentPersistedPayload, currentPersistedPayload);
+    }
     return payload;
 }
 
@@ -174,7 +228,7 @@ function recordAuditEvent(user, action, details) {
     }, previousPayload);
 
     persistPayloadToDatabase(payload);
-    fs.writeFileSync(DATA_FILE, JSON.stringify(payload, null, 2), 'utf8');
+    writePayloadToDisk(payload);
     return payload;
 }
 
@@ -199,15 +253,22 @@ function looksLikeRealBrowser(userAgent) {
         'yandex', 'petalbot', 'gptbot', 'claudebot', 'openai', 'anthropic', 'claude', 'perplexity', 'cohere',
         'facebookexternalhit', 'twitterbot', 'linkedinbot', 'archive.org_bot', 'semrush', 'ahrefs', 'mj12bot',
         'curl/', 'wget', 'python-requests', 'headlesschrome', 'playwright', 'phantomjs', 'axios', 'httpie',
-        'go-http-client', 'okhttp', 'postmanruntime', 'java/', 'libwww', 'python-urllib', 'wget/', 'python-urllib3'
+        'go-http-client', 'okhttp', 'postmanruntime', 'java/', 'libwww', 'python-urllib', 'wget/', 'python-urllib3',
+        'claudebot', 'anthropic-ai', 'openai-api', 'gpt4', 'gpt-4', 'chatgpt', 'o3-mini', 'o1-preview'
     ];
 
     if (botIndicators.some(indicator => normalizedUserAgent.includes(indicator))) {
         return false;
     }
 
-    const browserIndicators = ['mozilla', 'chrome', 'firefox', 'safari', 'edg/', 'edge/', 'opera', 'chromium', 'webkit'];
-    return browserIndicators.some(indicator => normalizedUserAgent.includes(indicator));
+    const browserIndicators = ['mozilla', 'chrome', 'firefox', 'safari', 'edg/', 'edge/', 'opera', 'chromium', 'webkit', 'applewebkit'];
+    const hasBrowserSignature = browserIndicators.some(indicator => normalizedUserAgent.includes(indicator));
+
+    if (!hasBrowserSignature) {
+        return false;
+    }
+
+    return true;
 }
 
 function shouldBlockAutomatedRequest(req) {
